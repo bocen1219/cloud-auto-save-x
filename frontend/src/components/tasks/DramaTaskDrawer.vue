@@ -786,7 +786,7 @@ async function batchCreateTasks(group: GroupedSuggestion) {
     let successCount = 0
     let failCount = 0
 
-    const loading = ElMessage({
+    let loading = ElMessage({
       message: `正在创建任务 0/${uniqueItems.length}...`,
       type: 'info',
       duration: 0,
@@ -823,8 +823,15 @@ async function batchCreateTasks(group: GroupedSuggestion) {
         results.push({ item, success: false, error })
       }
 
-      // Update loading message
-      loading.message = `正在创建任务 ${i + 1}/${uniqueItems.length}...`
+      // Update loading message by closing old and showing new
+      if (i < uniqueItems.length - 1) {
+        loading.close()
+        loading = ElMessage({
+          message: `正在创建任务 ${i + 1}/${uniqueItems.length}...`,
+          type: 'info',
+          duration: 0,
+        })
+      }
     }
 
     loading.close()
