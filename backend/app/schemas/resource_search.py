@@ -31,6 +31,11 @@ class TaskSuggestionItemOut(BaseModel):
     datetime: str | None = None
     channel: str | None = None
     source: str | None = None
+    # Episode grouping fields (added for series grouping)
+    group_key: str | None = None
+    episode: str | None = None
+    season: str | None = None
+    series_name: str | None = None
 
 
 class TaskSuggestionListOut(BaseModel):
