@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElMessage } from 'element-plus'
 
 import { fetchTMDBDetail, searchTMDB } from '@/api/media'
-import { browseDrive, fetchMagicRegex, fetchTasks, previewShare, previewShareBatch } from '@/api/tasks'
+import { browseDrive, fetchMagicRegex, fetchTasks, previewShare, previewShareBatch, createTask } from '@/api/tasks'
 import { fetchTMDBConfig } from '@/api/tmdb'
 import { fetchTaskSuggestions } from '@/api/resourceSearch'
 import type { DriveAccountItem, PluginItem } from '@/types/extensions'
@@ -109,6 +109,9 @@ const taskSuggestions = reactive({
   notice: '' as string,
   lastQuery: '' as string,
   lastDeep: 0 as 0 | 1,
+  // Grouping state
+  collapsedGroups: new Set<string>(),
+  showGrouped: true,
 })
 
 const tmdbLink = reactive({
@@ -126,6 +129,75 @@ const tmdbLink = reactive({
 
 const activeAccounts = computed(() => {
   return props.accounts.filter((item) => Boolean(item.enabled) && item.runtime_status === 'active')
+})
+
+type GroupedSuggestion = {
+  isGroup: true
+  group_key: string
+  title: string
+  items: TaskSuggestionItemExt[]
+  episodeRange: string
+  collapsed: boolean
+}
+
+type SingleSuggestion = TaskSuggestionItemExt & {
+  isGroup?: false
+}
+
+const groupedSuggestions = computed<Array<GroupedSuggestion | SingleSuggestion>>(() => {
+  if (!taskSuggestions.showGrouped) {
+    return taskSuggestions.items
+  }
+
+  const groups = new Map<string, TaskSuggestionItemExt[]>()
+  const ungrouped: TaskSuggestionItemExt[] = []
+
+  // Group items by group_key
+  for (const item of taskSuggestions.items) {
+    const groupKey = item.group_key
+    if (groupKey) {
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, [])
+      }
+      groups.get(groupKey)!.push(item)
+    } else {
+      ungrouped.push(item)
+    }
+  }
+
+  const result: Array<GroupedSuggestion | SingleSuggestion> = []
+
+  // Add grouped items
+  for (const [groupKey, items] of groups.entries()) {
+    if (items.length <= 1) {
+      // Only one item, don't group
+      result.push(...items)
+    } else {
+      // Multiple items, create a group
+      const episodes = items.map(x => x.episode).filter(Boolean).sort()
+      const episodeRange = episodes.length > 1
+        ? `${episodes[0]}-${episodes[episodes.length - 1]}`
+        : episodes[0] || ''
+
+      const title = items[0].series_name
+        ? `${items[0].series_name} (${items[0].season || ''}) ${episodeRange}`
+        : items[0].taskname
+
+      result.push({
+        isGroup: true,
+        group_key: groupKey,
+        title,
+        items,
+        episodeRange,
+        collapsed: taskSuggestions.collapsedGroups.has(groupKey),
+      })
+    }
+  }
+
+  // Add ungrouped items
+  result.push(...ungrouped)
+
+  return result
 })
 
 const unavailableSelectedAccount = computed(() => {
@@ -667,6 +739,110 @@ function selectSuggestion(item: TaskSuggestionItemExt) {
           openSharePicker()
         })
     })
+}
+
+function toggleGroupCollapse(groupKey: string) {
+  if (taskSuggestions.collapsedGroups.has(groupKey)) {
+    taskSuggestions.collapsedGroups.delete(groupKey)
+  } else {
+    taskSuggestions.collapsedGroups.add(groupKey)
+  }
+}
+
+async function batchCreateTasks(group: GroupedSuggestion) {
+  // Deduplicate by episode
+  const episodeMap = new Map<string, TaskSuggestionItemExt>()
+  for (const item of group.items) {
+    const ep = item.episode || item.shareurl
+    if (!episodeMap.has(ep)) {
+      episodeMap.set(ep, item)
+    }
+  }
+
+  const uniqueItems = Array.from(episodeMap.values())
+
+  // Validate required fields
+  if (!state.savepath) {
+    ElMessage.warning('请先填写保存路径')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `即将为 "${group.title}" 创建 ${uniqueItems.length} 个追剧任务（相同集数已去重）。\n\n保存路径：${state.savepath}\n使用账号：${state.account_choice === '__AUTO__' ? '自动选择' : state.account_choice}`,
+      '批量创建任务',
+      {
+        confirmButtonText: '确认创建',
+        cancelButtonText: '取消',
+        type: 'warning',
+        dangerouslyUseHTMLString: false,
+      }
+    )
+
+    taskSuggestions.visible = false
+
+    // Create tasks one by one
+    const results = []
+    let successCount = 0
+    let failCount = 0
+
+    const loading = ElMessage({
+      message: `正在创建任务 0/${uniqueItems.length}...`,
+      type: 'info',
+      duration: 0,
+    })
+
+    for (let i = 0; i < uniqueItems.length; i++) {
+      const item = uniqueItems[i]
+      try {
+        const payload = {
+          task_type: 'drama',
+          taskname: item.taskname,
+          shareurl: item.shareurl,
+          savepath: state.savepath,
+          pattern: state.pattern || null,
+          replace: state.replace || null,
+          enddate: state.enddate || null,
+          ignore_extension: state.ignore_extension,
+          sort_index: state.sort_index,
+          startfid: state.startfid || null,
+          account_name: state.account_choice === '__AUTO__' ? null : state.account_choice,
+          update_subdir: state.update_subdir || null,
+          tmdb_id: state.tmdb_id,
+          tmdb_media_type: state.tmdb_media_type,
+          enabled: state.enabled,
+          addition: state.addition,
+          extra: state.extra,
+        }
+
+        await createTask(payload)
+        successCount++
+        results.push({ item, success: true })
+      } catch (error) {
+        failCount++
+        results.push({ item, success: false, error })
+      }
+
+      // Update loading message
+      loading.message = `正在创建任务 ${i + 1}/${uniqueItems.length}...`
+    }
+
+    loading.close()
+
+    // Show result
+    if (failCount === 0) {
+      ElMessage.success(`批量创建成功！共创建 ${successCount} 个任务`)
+      // Refresh task list
+      emit('update:modelValue', false)
+    } else if (successCount === 0) {
+      ElMessage.error(`批量创建失败！所有任务都创建失败`)
+    } else {
+      ElMessage.warning(`批量创建部分成功：成功 ${successCount} 个，失败 ${failCount} 个`)
+      emit('update:modelValue', false)
+    }
+  } catch {
+    // User cancelled
+  }
 }
 
 function sortUpdatedAt(a: any, b: any) {
@@ -1646,22 +1822,59 @@ watch(
                 }}
               </span>
             </div>
-            <div
-              v-for="(item, idx) in taskSuggestions.items"
-              :key="`${item.shareurl}-${idx}`"
-              class="task-suggestions__item"
-              @mousedown.prevent
-              @click="selectSuggestion(item)"
-              :title="item.content || ''"
-            >
-              <span class="task-suggestions__icon">{{ item.verify === true ? '✅' : item.verify === false ? '❌' : '❔' }}</span>
-              <span class="task-suggestions__name">{{ item.taskname }}</span>
-              <el-link class="task-suggestions__url" :href="item.shareurl" target="_blank" @click.stop>{{ item.shareurl }}</el-link>
-              <el-tag size="small" type="success" effect="plain">{{ item.source || '网络公开' }}</el-tag>
-              <el-tag v-if="item.channel" size="small" type="info" effect="plain">{{ item.channel }}</el-tag>
-              <el-tag v-if="item.datetime" size="small" effect="plain">{{ item.datetime }}</el-tag>
-              <el-tag v-if="item.max_video" size="small" type="warning" effect="plain">文件最大</el-tag>
-            </div>
+            <template v-for="(item, idx) in groupedSuggestions" :key="item.isGroup ? item.group_key : `${item.shareurl}-${idx}`">
+              <!-- Grouped items -->
+              <div v-if="item.isGroup" class="task-suggestions__group">
+                <div class="task-suggestions__group-header" @mousedown.prevent @click="toggleGroupCollapse(item.group_key)">
+                  <span class="task-suggestions__group-icon">{{ item.collapsed ? '▶' : '▼' }}</span>
+                  <span class="task-suggestions__group-title">📺 {{ item.title }}</span>
+                  <el-tag size="small" type="info" effect="plain">{{ item.items.length }} 个资源</el-tag>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    link
+                    @click.stop="batchCreateTasks(item)"
+                    style="margin-left: auto"
+                  >
+                    批量创建 ⚡
+                  </el-button>
+                </div>
+                <div v-if="!item.collapsed" class="task-suggestions__group-items">
+                  <div
+                    v-for="(subItem, subIdx) in item.items"
+                    :key="`${subItem.shareurl}-${subIdx}`"
+                    class="task-suggestions__item task-suggestions__item--sub"
+                    @mousedown.prevent
+                    @click="selectSuggestion(subItem)"
+                    :title="subItem.content || ''"
+                  >
+                    <span class="task-suggestions__icon">{{ subItem.verify === true ? '✅' : subItem.verify === false ? '❌' : '❔' }}</span>
+                    <span class="task-suggestions__name">{{ subItem.episode || '' }} · {{ subItem.taskname }}</span>
+                    <el-link class="task-suggestions__url" :href="subItem.shareurl" target="_blank" @click.stop>{{ subItem.shareurl }}</el-link>
+                    <el-tag size="small" type="success" effect="plain">{{ subItem.source || '网络公开' }}</el-tag>
+                    <el-tag v-if="subItem.channel" size="small" type="info" effect="plain">{{ subItem.channel }}</el-tag>
+                    <el-tag v-if="subItem.datetime" size="small" effect="plain">{{ subItem.datetime }}</el-tag>
+                    <el-tag v-if="subItem.max_video" size="small" type="warning" effect="plain">文件最大</el-tag>
+                  </div>
+                </div>
+              </div>
+              <!-- Ungrouped items -->
+              <div
+                v-else
+                class="task-suggestions__item"
+                @mousedown.prevent
+                @click="selectSuggestion(item)"
+                :title="item.content || ''"
+              >
+                <span class="task-suggestions__icon">{{ item.verify === true ? '✅' : item.verify === false ? '❌' : '❔' }}</span>
+                <span class="task-suggestions__name">{{ item.taskname }}</span>
+                <el-link class="task-suggestions__url" :href="item.shareurl" target="_blank" @click.stop>{{ item.shareurl }}</el-link>
+                <el-tag size="small" type="success" effect="plain">{{ item.source || '网络公开' }}</el-tag>
+                <el-tag v-if="item.channel" size="small" type="info" effect="plain">{{ item.channel }}</el-tag>
+                <el-tag v-if="item.datetime" size="small" effect="plain">{{ item.datetime }}</el-tag>
+                <el-tag v-if="item.max_video" size="small" type="warning" effect="plain">文件最大</el-tag>
+              </div>
+            </template>
           </div>
         </el-form-item>
         <el-form-item label="关联 TMDB（可选）">
@@ -2092,6 +2305,50 @@ watch(
 
 .task-suggestions__item:hover {
   background: var(--el-fill-color);
+}
+
+.task-suggestions__item--sub {
+  padding-left: 24px;
+  font-size: 12px;
+}
+
+.task-suggestions__group {
+  margin: 4px 0;
+}
+
+.task-suggestions__group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-light);
+}
+
+.task-suggestions__group-header:hover {
+  background: var(--el-fill-color);
+  border-color: var(--el-border-color);
+}
+
+.task-suggestions__group-icon {
+  width: 12px;
+  font-size: 10px;
+  color: var(--el-text-color-secondary);
+}
+
+.task-suggestions__group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  flex: 1;
+}
+
+.task-suggestions__group-items {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--el-border-color-light);
 }
 
 .task-suggestions__icon {

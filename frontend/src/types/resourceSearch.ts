@@ -21,6 +21,11 @@ export type TaskSuggestionItem = {
   channel?: string | null
   source?: string | null
   verify?: boolean | null
+  // Episode grouping fields (added for series grouping)
+  group_key?: string | null
+  episode?: string | null
+  season?: string | null
+  series_name?: string | null
 }
 
 export type TaskSuggestionResponse = {

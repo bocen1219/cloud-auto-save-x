@@ -69,7 +69,7 @@ def _pansou_cloud_type(value: str | None) -> str | None:
     if not dt:
         return None
     mapping = {
-        "115": "pan115",
+        "115": "115",
         "123pan": "pan123",
         "cloud189": "tianyi",
         "baidu": "baiduPan",
@@ -149,6 +149,82 @@ def _loads(value: str) -> dict[str, Any]:
 
 def _dumps(value: dict[str, Any]) -> str:
     return json.dumps(value or {}, ensure_ascii=False)
+
+
+def _extract_115_share_id(url: str) -> str | None:
+    """Extract share ID from 115 URLs for grouping duplicates.
+
+    Examples:
+        https://115cdn.com/s/swszdfk3wov?password=td01 -> swszdfk3wov
+        https://115.com/s/swszkef3wov?password=fb45 -> swszkef3wov
+    """
+    if not url:
+        return None
+    # Match 115.com or 115cdn.com domains
+    match = re.search(r'(?:115cdn?\.com|115\.com)/s/([a-zA-Z0-9]+)', url)
+    return match.group(1) if match else None
+
+
+def _parse_episode_info(title: str) -> dict[str, Any]:
+    """Parse episode information from title for grouping.
+
+    Examples:
+        "电视剧：迷悟 (2026) - S01E10" -> {
+            "series_name": "电视剧：迷悟",
+            "year": "2026",
+            "season": "S01",
+            "episode": "E10",
+            "group_key": "电视剧：迷悟-2026-S01"
+        }
+        "某剧 S02E03" -> {
+            "series_name": "某剧",
+            "season": "S02",
+            "episode": "E03",
+            "group_key": "某剧-S02"
+        }
+    """
+    if not title:
+        return {}
+
+    # Extract year if present (YYYY)
+    year_match = re.search(r'\((\d{4})\)', title)
+    year = year_match.group(1) if year_match else None
+
+    # Extract season and episode (S01E10, S1E10, etc.)
+    episode_match = re.search(r'[Ss](\d+)[Ee](\d+)', title)
+    if not episode_match:
+        return {}
+
+    season_num = episode_match.group(1).zfill(2)
+    episode_num = episode_match.group(2).zfill(2)
+    season = f"S{season_num}"
+    episode = f"E{episode_num}"
+
+    # Extract series name (everything before season/episode or year)
+    # Remove common separators
+    series_name = title
+    if year_match:
+        series_name = title[:year_match.start()].strip()
+    else:
+        series_name = title[:episode_match.start()].strip()
+
+    # Clean up separators at the end
+    series_name = re.sub(r'[-\s:：]+$', '', series_name).strip()
+
+    # Build group key
+    parts = [series_name]
+    if year:
+        parts.append(year)
+    parts.append(season)
+    group_key = "-".join(parts)
+
+    return {
+        "series_name": series_name,
+        "year": year,
+        "season": season,
+        "episode": episode,
+        "group_key": group_key,
+    }
 
 
 def ensure_default_sources(db: Session) -> dict[str, ResourceSearchSource]:
@@ -382,7 +458,7 @@ class PanSouClient:
                 "kw": keyword,
                 "cloud_types": [cloud_type]
                 if cloud_type
-                else ["quark", "pan123", "pan115", "uc", "tianyi", "aliyun", "xunlei", "baiduPan"],
+                else ["quark", "pan123", "115", "uc", "tianyi", "aliyun", "xunlei", "baiduPan"],
                 "res": "merge",
                 "refresh": bool(refresh),
             }
@@ -396,7 +472,7 @@ class PanSouClient:
                 keys: list[str] = [cloud_type, cloud_type.lower()]
                 if cloud_type == "tianyi":
                     keys.extend(["cloud189", "tianyi"])
-                elif cloud_type == "pan115":
+                elif cloud_type == "115":
                     keys.extend(["cloud115", "pan115", "115"])
                 elif cloud_type == "pan123":
                     keys.extend(["123pan", "pan123"])
@@ -547,6 +623,7 @@ def fetch_task_suggestions(
 
     results: list[dict[str, Any]] = []
     link_set: set[str] = set()
+    share_115_ids: dict[str, dict[str, Any]] = {}  # shareId -> first item mapping for 115
 
     def _sort_key(x: dict[str, Any]) -> str:
         v = x.get("datetime")
@@ -557,6 +634,15 @@ def fetch_task_suggestions(
         url = str(item.get("shareurl") or "").strip()
         if not url or url in link_set:
             continue
+
+        # Special handling for 115 links: deduplicate by share ID
+        share_id = _extract_115_share_id(url)
+        if share_id:
+            if share_id in share_115_ids:
+                # Already have this share ID, skip duplicate
+                continue
+            share_115_ids[share_id] = item
+
         link_set.add(url)
         results.append(item)
 
@@ -598,6 +684,15 @@ def fetch_task_suggestions(
             continue
         name = item.get("taskname") if item.get("taskname") else item.get("content", "")
         item['taskname'] = name
+
+        # Add episode grouping info for series (especially useful for 115)
+        episode_info = _parse_episode_info(name)
+        if episode_info:
+            item['group_key'] = episode_info.get('group_key')
+            item['episode'] = episode_info.get('episode')
+            item['season'] = episode_info.get('season')
+            item['series_name'] = episode_info.get('series_name')
+
         filtered.append(item)
 
     message = None
