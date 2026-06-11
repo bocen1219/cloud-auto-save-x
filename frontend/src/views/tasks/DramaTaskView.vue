@@ -14,10 +14,12 @@ import {
   updateTask,
   updateTaskSchedulerSetting,
 } from '@/api/tasks'
+import { fetchSyncTasks } from '@/api/syncTasks'
 import { fetchDriveAccounts, fetchPlugins } from '@/api/extensions'
 import { TASK_RUN, TASK_WRITE } from '@/constants/permissions'
 import { useAuthStore } from '@/stores/auth'
 import type { DriveAccountItem, PluginItem } from '@/types/extensions'
+import type { SyncTaskItem } from '@/types/syncTasks'
 import type { TaskItem, TaskSchedulerSetting } from '@/types/tasks'
 import { validateCrontab5, validateTimezone } from '@/utils/cron'
 
@@ -30,11 +32,13 @@ const submitting = ref(false)
 const tasks = ref<TaskItem[]>([])
 const accounts = ref<DriveAccountItem[]>([])
 const plugins = ref<PluginItem[]>([])
+const syncTasks = ref<SyncTaskItem[]>([])
 const scheduler = ref<TaskSchedulerSetting | null>(null)
 const schedulerSaving = ref(false)
 const repairSaving = ref(false)
 const stopCompletedSaving = ref(false)
 const syncSnapshotsSaving = ref(false)
+const syncTasksLoading = ref(false)
 
 const drawerVisible = ref(false)
 const currentTask = ref<TaskItem | null>(null)
@@ -221,16 +225,18 @@ const activePlugins = computed(() => {
 async function loadData() {
   loading.value = true
   try {
-    const [taskData, pluginData, accountData, schedulerData] = await Promise.all([
+    const [taskData, pluginData, accountData, schedulerData, syncTaskData] = await Promise.all([
       fetchTasks(),
       fetchPlugins(),
       fetchDriveAccounts(),
       fetchTaskSchedulerSetting(),
+      fetchSyncTasks().catch(() => [] as SyncTaskItem[]),
     ])
     tasks.value = taskData
     plugins.value = pluginData
     accounts.value = accountData
     scheduler.value = schedulerData
+    syncTasks.value = syncTaskData || []
   } finally {
     loading.value = false
   }
@@ -244,12 +250,32 @@ async function refreshPluginsIfNeeded() {
   }
 }
 
-function openCreateDrawer() {
+async function refreshSyncTasksIfNeeded() {
+  try {
+    syncTasks.value = await fetchSyncTasks()
+  } catch {
+    return
+  }
+}
+
+async function openCreateDrawer() {
+  syncTasksLoading.value = true
+  try {
+    await refreshSyncTasksIfNeeded()
+  } finally {
+    syncTasksLoading.value = false
+  }
   currentTask.value = null
   drawerVisible.value = true
 }
 
-function openEditDrawer(row: TaskItem) {
+async function openEditDrawer(row: TaskItem) {
+  syncTasksLoading.value = true
+  try {
+    await refreshSyncTasksIfNeeded()
+  } finally {
+    syncTasksLoading.value = false
+  }
   currentTask.value = row
   drawerVisible.value = true
 }
@@ -259,6 +285,7 @@ watch(
   async (visible) => {
     if (!visible) return
     await refreshPluginsIfNeeded()
+    await refreshSyncTasksIfNeeded()
   },
   { immediate: false },
 )
@@ -929,7 +956,7 @@ onBeforeUnmount(() => {
         <el-button v-if="canRun" :loading="runAllDialog.running" :disabled="runAllDialog.running" @click="confirmRunAll">执行全部</el-button>
         <el-button v-if="canWrite" :loading="stopCompletedSaving" @click="confirmStopCompleted">停止已完结任务</el-button>
         <el-button v-if="canWrite" :loading="repairSaving" @click="confirmRepairBanned">修复失效任务</el-button>
-        <el-button v-if="canWrite" type="success" @click="openCreateDrawer">新增任务</el-button>
+        <el-button v-if="canWrite" type="success" :loading="syncTasksLoading" @click="openCreateDrawer">新增任务</el-button>
       </div>
     </div>
 
@@ -1042,7 +1069,7 @@ onBeforeUnmount(() => {
               >
                 执行
               </el-button>
-              <el-button v-if="canWrite" text bg  @click="openEditDrawer(row)">编辑</el-button>
+              <el-button v-if="canWrite" text bg :loading="syncTasksLoading" @click="openEditDrawer(row)">编辑</el-button>
               <el-button v-if="canWrite" text bg type="danger"  @click="openDeleteDialog(row)">删除</el-button>
             </div>
             <div v-else class="task-actions">
@@ -1128,7 +1155,7 @@ onBeforeUnmount(() => {
               >
                 执行
               </el-button>
-              <el-button v-if="canWrite" text bg  @click="openEditDrawer(row)">编辑</el-button>
+              <el-button v-if="canWrite" text bg :loading="syncTasksLoading" @click="openEditDrawer(row)">编辑</el-button>
               <el-button v-if="canWrite" text bg type="danger" @click="openDeleteDialog(row)">删除</el-button>
             </div>
           </div>
@@ -1141,6 +1168,7 @@ onBeforeUnmount(() => {
       :task="currentTask"
       :accounts="accounts"
       :plugins="activePlugins"
+      :sync-tasks="syncTasks"
       :submitting="submitting"
       @save="submitTask"
       @run-once="handleRunOnce"

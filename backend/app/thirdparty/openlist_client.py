@@ -1,11 +1,82 @@
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Literal, Mapping
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
+
+_SENSITIVE_KEYS = {"authorization", "token", "password", "passcode", "cookie", "set-cookie"}
+
+
+def _truncate(s: str, max_len: int) -> str:
+    s = str(s or "")
+    if max_len <= 0:
+        return ""
+    return s
+    if len(s) <= max_len:
+        return s
+    return f"{s[:max_len]}...(truncated,len={len(s)})"
+
+
+def _redact_key(key: str) -> bool:
+    k = str(key or "").strip().lower()
+    if not k:
+        return False
+    if k in _SENSITIVE_KEYS:
+        return True
+    for x in _SENSITIVE_KEYS:
+        if x in k:
+            return True
+    return False
+
+
+def _safe_obj(value: Any, *, max_items: int, depth: int) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return f"<bytes len={len(value)}>"
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, str):
+        return _truncate(value, 5000)
+    if isinstance(value, Mapping):
+        if depth >= 2:
+            return f"<dict keys={len(value)}>"
+        out: dict[str, Any] = {}
+        for idx, (k, v) in enumerate(value.items()):
+            # if idx >= max_items:
+            #     out["...(truncated)"] = f"items>{max_items}"
+            #     break
+            ks = str(k)
+            if _redact_key(ks):
+                out[ks] = "***"
+                continue
+            out[ks] = _safe_obj(v, max_items=max(10, int(max_items / 2)), depth=depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set)):
+        seq = list(value)
+        if depth >= 2:
+            return f"<{type(value).__name__} len={len(seq)}>"
+        head: list[Any] = []
+        for x in seq[: max_items if max_items > 0 else 0]:
+            head.append(_safe_obj(x, max_items=max(10, int(max_items / 2)), depth=depth + 1))
+        return {"len": len(seq), "head": head}
+    return _truncate(repr(value), 5000)
+
+
+def _summarize(value: Any, *, max_len: int = 5000, max_items: int = 20, depth: int = 0) -> str:
+    try:
+        obj = _safe_obj(value, max_items=max_items, depth=depth)
+        s = json.dumps(obj, ensure_ascii=False)
+        return _truncate(s, max_len)
+    except Exception:
+        return _truncate(repr(value), max_len)
 
 
 @dataclass(slots=True)
@@ -64,6 +135,15 @@ class OpenListClient:
             headers.update({str(k): str(v) for k, v in extra.items()})
         return headers
 
+    @staticmethod
+    def _latin1_transport(value: str) -> str:
+        text = str(value or "")
+        try:
+            text.encode("latin-1")
+            return text
+        except Exception:
+            return text.encode("utf-8").decode("latin-1")
+
     def _sleep(self, attempt: int) -> None:
         sleep_s = self.backoff_seconds * (2**attempt)
         sleep_s = sleep_s + random.random() * max(0.0, sleep_s / 5)
@@ -89,6 +169,18 @@ class OpenListClient:
 
         for attempt in range(retries + 1):
             try:
+                t0 = time.monotonic()
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "OpenList request method=%s endpoint=%s attempt=%s/%s timeout=%.2f params=%s json=%s",
+                        str(method or "GET").upper(),
+                        str(endpoint or ""),
+                        attempt + 1,
+                        retries + 1,
+                        timeout,
+                        _summarize(params),
+                        _summarize(json),
+                    )
                 resp = self.session.request(
                     method=str(method or "GET").upper(),
                     url=url,
@@ -99,6 +191,7 @@ class OpenListClient:
                     timeout=timeout,
                     verify=self.verify,
                 )
+                cost_ms = (time.monotonic() - t0) * 1000.0
                 if resp.status_code in (429, 500, 502, 503, 504):
                     raise requests.exceptions.HTTPError(f"status={resp.status_code}", response=resp)
                 resp.raise_for_status()
@@ -108,10 +201,35 @@ class OpenListClient:
                     payload = resp.json()
                     if ensure_success:
                         self._ensure_api_success(payload, http_status=resp.status_code)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "OpenList response endpoint=%s status=%s cost_ms=%.1f json=%s",
+                            str(endpoint or ""),
+                            resp.status_code,
+                            cost_ms,
+                            _summarize(payload),
+                        )
                     return payload
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "OpenList response endpoint=%s status=%s cost_ms=%.1f content_type=%s body=%s",
+                        str(endpoint or ""),
+                        resp.status_code,
+                        cost_ms,
+                        _truncate(content_type, 5000),
+                        _summarize(resp.content),
+                    )
                 return resp.content
             except Exception as e:
                 last_exc = e
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "OpenList request failed endpoint=%s attempt=%s/%s err=%s",
+                        str(endpoint or ""),
+                        attempt + 1,
+                        retries + 1,
+                        str(e).strip() or type(e).__name__,
+                    )
                 if attempt >= retries:
                     break
                 self._sleep(attempt)
@@ -161,6 +279,7 @@ class OpenListClient:
         code = payload.get("code")
         if str(code) == "200":
             return
+        logger.error(f"OpenList API returned non-success code: {code} with message: {payload.get('message') or ''}")
         raise OpenListError(
             "OpenList API returned non-success code",
             http_status=http_status,
@@ -561,6 +680,7 @@ class OpenListClient:
                 "skip_existing": bool(skip_existing),
                 "merge": bool(merge),
             },
+            allow_retry=False,
         )
 
     def fs_remove(self, dir_path: str, names: Iterable[str]) -> dict[str, Any]:
@@ -595,7 +715,7 @@ class OpenListClient:
         sha256: str | None = None,
         content_length: int | None = None,
     ) -> dict[str, Any]:
-        h: dict[str, str] = {"File-Path": file_path}
+        h: dict[str, str] = {"File-Path": self._latin1_transport(file_path)}
         if password:
             h["Password"] = password
         if md5:
@@ -630,7 +750,7 @@ class OpenListClient:
         password: str = "",
         data: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        h: dict[str, str] = {"File-Path": file_path}
+        h: dict[str, str] = {"File-Path": self._latin1_transport(file_path)}
         if password:
             h["Password"] = password
         url = self._url("/api/fs/form")

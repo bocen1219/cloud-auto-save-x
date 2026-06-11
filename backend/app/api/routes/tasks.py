@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import threading
@@ -11,12 +12,13 @@ import re
 from sqlalchemy import and_, func, or_, select, update as sa_update
 from sqlalchemy.orm import Session
 
-from app.core.deps import CurrentUser, get_current_user, require_permissions
+from app.core.deps import CurrentUser, get_current_user, get_current_user_scoped, require_permissions, require_permissions_scoped
 from app.core.errors import bad_request, not_found
 from app.core.permissions import TASK_READ, TASK_RUN, TASK_WRITE
 from app.core.settings import settings
 from app.db.session import get_db
 from app.db.session import SessionLocal
+from app.extensions.adapters.adapter_factory import AdapterFactory
 from app.extensions.runtime.adapter_registry import AdapterRegistry
 from app.extensions.runtime.account_manager import DatabaseAccountManager
 from app.extensions.runtime.execution_log import ExecutionLog
@@ -58,7 +60,7 @@ from app.schemas.task_repair import RepairBannedTasksOut
 from app.services import audit
 from app.services.notifications.sender import send_runtime
 from app.services.notifications.task_notify import DRAMA_NOTIFY_TITLE, build_task_section
-from app.services.sync_task_triggers import should_trigger_linked_sync_for_drama_execution, trigger_linked_sync_tasks_async
+from app.services.sync_task_triggers import should_trigger_linked_sync_for_drama_execution, trigger_linked_sync_tasks_async, trigger_sync_tasks_by_sync_uids
 from app.services.share_preview_batch import cache_clear as _preview_batch_cache_clear
 from app.services.share_preview_batch import preview_share_batch
 from app.services.drama_update_progress import build_drama_update_progress
@@ -69,6 +71,9 @@ from app.services.tasks import create_task, delete_task, get_task, list_tasks_re
 from app.services.tmdb_settings import get_or_create_tmdb_setting, get_tmdb_runtime_config
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
 def _share_preview_batch_cache_clear() -> None:
     _preview_batch_cache_clear()
 
@@ -272,10 +277,12 @@ def _task_out(
             and isinstance(tmdb_payload_map, dict)
             and isinstance(snapshot_map, dict)
         ):
-            drama_update_progress = build_drama_update_progress(
-                tmdb_details=tmdb_payload_map.get(key),
-                snapshot=snapshot_map.get(str(getattr(item, "task_uid", "") or "").strip()),
-            )
+            snapshot = snapshot_map.get(str(getattr(item, "task_uid", "") or "").strip())
+            if snapshot:
+                drama_update_progress = build_drama_update_progress(
+                    tmdb_details=tmdb_payload_map.get(key),
+                    snapshot=snapshot,
+                )
 
     return TaskOut(
         id=item.id,
@@ -709,25 +716,26 @@ def post_run_task(request: Request, task_id: int, current: CurrentUser = Depends
     return _execution_out(execution)
 
 
-@router.post('/{task_id:int}/run/stream', dependencies=[Depends(require_permissions(TASK_RUN))])
-def post_run_task_stream(request: Request, task_id: int, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    task = get_task(db, task_id)
-    init_payload = {
-        "task_id": int(task.id),
-        "taskname": str(task.taskname),
-        "started_at": datetime.now().isoformat(),
-    }
-    audit.write_audit_log(
-        db,
-        actor_user_id=current.user.id,
-        action='task.run.stream',
-        target_type='task',
-        target_id=str(init_payload["task_id"]),
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get('user-agent'),
-        success=True,
-    )
-    db.commit()
+@router.post('/{task_id:int}/run/stream', dependencies=[Depends(require_permissions_scoped(TASK_RUN))])
+def post_run_task_stream(request: Request, task_id: int, current: CurrentUser = Depends(get_current_user_scoped)):
+    with SessionLocal() as adb:
+        task = get_task(adb, task_id)
+        init_payload = {
+            "task_id": int(task.id),
+            "taskname": str(task.taskname),
+            "started_at": datetime.now().isoformat(),
+        }
+        audit.write_audit_log(
+            adb,
+            actor_user_id=current.user.id,
+            action='task.run.stream',
+            target_type='task',
+            target_id=str(init_payload["task_id"]),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get('user-agent'),
+            success=True,
+        )
+        adb.commit()
 
     q: queue.Queue[tuple[str, object]] = queue.Queue()
     done_sentinel = object()
@@ -753,8 +761,23 @@ def post_run_task_stream(request: Request, task_id: int, current: CurrentUser = 
                             send_runtime(wdb, DRAMA_NOTIFY_TITLE, section)
                     except Exception:
                         pass
+                    tree_sum = str(getattr(execution, "tree_summary", "") or "")
+                    logger.info(
+                        "追剧任务流式执行完成，准备同步判定: execution.status=%s tree_summary=%s",
+                        str(getattr(execution, "status", "") or ""),
+                        tree_sum[:100],
+                    )
                     if should_trigger_linked_sync_for_drama_execution(execution):
-                        trigger_linked_sync_tasks_async([str(getattr(wtask, "task_uid", "") or "")], source="api.tasks.run.stream")
+                        uid = str(getattr(wtask, "task_uid", "") or "").strip()
+                        logger.info("追剧同步判定为 True，准备触发同步任务 uid=%s", uid)
+                        trigger_linked_sync_tasks_async([uid], source="api.tasks.run.stream")
+                    else:
+                        logger.warning(
+                            "追剧同步判定为 False，不触发同步任务 execution.status=%s tree_summary=%s run_log 前100=%s",
+                            str(getattr(execution, "status", "") or ""),
+                            tree_sum[:100],
+                            str(getattr(execution, "run_log", "") or "")[:100],
+                        )
                 q.put(
                     (
                         "done",
@@ -829,8 +852,8 @@ def post_run_task_stream(request: Request, task_id: int, current: CurrentUser = 
     )
 
 
-@router.post('/run/stream', dependencies=[Depends(require_permissions(TASK_RUN))])
-def post_run_task_stream_by_payload(request: Request, payload: TaskCreateIn, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.post('/run/stream', dependencies=[Depends(require_permissions_scoped(TASK_RUN))])
+def post_run_task_stream_by_payload(request: Request, payload: TaskCreateIn, current: CurrentUser = Depends(get_current_user_scoped)):
     import uuid
 
     init_payload = {
@@ -839,18 +862,19 @@ def post_run_task_stream_by_payload(request: Request, payload: TaskCreateIn, cur
         "started_at": datetime.now().isoformat(),
         "preview": True,
     }
-    audit.write_audit_log(
-        db,
-        actor_user_id=current.user.id,
-        action='task.run.preview_stream',
-        target_type='task',
-        target_id='0',
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get('user-agent'),
-        success=True,
-        detail=str(payload.taskname or ""),
-    )
-    db.commit()
+    with SessionLocal() as adb:
+        audit.write_audit_log(
+            adb,
+            actor_user_id=current.user.id,
+            action='task.run.preview_stream',
+            target_type='task',
+            target_id='0',
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get('user-agent'),
+            success=True,
+            detail=str(payload.taskname or ""),
+        )
+        adb.commit()
 
     q: queue.Queue[tuple[str, object]] = queue.Queue()
     done_sentinel = object()
@@ -891,6 +915,20 @@ def post_run_task_stream_by_payload(request: Request, payload: TaskCreateIn, cur
                 )
                 wtask.id = 0
                 execution = TaskExecutor(wdb).run_task(wtask, log=log, persist_execution=False)
+                if str(getattr(wtask, "task_type", "") or "") == "drama":
+                    task_uid_for_sync = str(getattr(wtask, "task_uid", "") or "").strip()
+                    if should_trigger_linked_sync_for_drama_execution(execution):
+                        # 优先用 payload.sync_task_uids（前端透传，未保存时 DB 无关联记录）
+                        payload_sync_uids = getattr(payload, "sync_task_uids", None) or []
+                        if payload_sync_uids:
+                            trigger_sync_tasks_by_sync_uids(list(payload_sync_uids), source="api.tasks.run.stream.preview")
+                        # 已保存任务走关联链路：根据 shareurl 查找真实 uid
+                        elif task_uid_for_sync.startswith("preview-"):
+                            existing = wdb.execute(select(Task.task_uid).where(Task.shareurl == str(payload.shareurl or "").strip())).scalars().first()
+                            if existing:
+                                trigger_linked_sync_tasks_async([str(existing)], source="api.tasks.run.stream.preview")
+                        elif task_uid_for_sync:
+                            trigger_linked_sync_tasks_async([task_uid_for_sync], source="api.tasks.run.stream.preview")
                 q.put(
                     (
                         "done",
@@ -997,10 +1035,9 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     account_name = payload.account_name or _pick_default_account_name(db, drive_type)
     if payload.account_name and _get_active_account(db, payload.account_name) is None:
         raise not_found('DRIVE_ACCOUNT_NOT_FOUND', '指定账号不存在或不可用')
-    manager = DatabaseAccountManager(db)
+    manager = DatabaseAccountManager(db, no_login=True)
     task_payload = {"shareurl": payload.shareurl, "account_name": account_name}
-    manager.init_for_tasks([task_payload])
-    adapter = manager.get_adapter_for_task(task_payload)
+    adapter = manager.get_adapter_for_task(task_payload, allow_inactive=True)
     if adapter is None:
         raise not_found('DRIVE_ACCOUNT_NOT_FOUND', '没有可用的驱动账号')
     pwd_id, passcode, extracted_pdir_fid, _ = adapter.extract_url(payload.shareurl)
@@ -1013,7 +1050,12 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         raise bad_request('TASK_SHARE_TOKEN_FAILED', str(message))
     pdir_fid = payload.pdir_fid if payload.pdir_fid is not None else (extracted_pdir_fid or "")
     detail = adapter.get_detail(pwd_id, stoken, pdir_fid or "")
-    raw_items = (((detail or {}).get("data") or {}).get("list")) or []
+    data = (detail or {}).get("data") or {}
+    if isinstance(data, dict):
+        resolved = str(data.get("resolved_pdir_fid") or "").strip()
+        if resolved:
+            pdir_fid = resolved
+    raw_items = (data.get("list") if isinstance(data, dict) else None) or []
     taskname = str(payload.taskname or "")
     pattern = str(payload.pattern or "")
     replace = str(payload.replace or "")
@@ -1053,10 +1095,30 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     dir_file_list: list[dict] = []
     dir_filename_list: list[str] = []
     if savepath:
+        dest_adapter = None
+        account_row = _get_active_account(db, account_name) if account_name else None
+        if account_row is not None:
+            cfg = AdapterRegistry.parse_config_json(account_row.drive_type, account_row.config_json, account_row.cookie)
+            cookie = AdapterRegistry.serialize_config(account_row.drive_type, cfg)
+            dest_adapter = AdapterFactory.create_adapter(
+                account_row.drive_type,
+                cookie,
+                0,
+                config=cfg,
+                account_name=account_row.name,
+                no_login=False,
+            )
+            if dest_adapter is not None:
+                try:
+                    ok = dest_adapter.init()
+                except Exception:
+                    ok = None
+                if not ok:
+                    dest_adapter = None
         normalized = re.sub(r"/+", "/", savepath)
         dest_fid = None
         try:
-            fid_list = adapter.get_fids([normalized]) or []
+            fid_list = (dest_adapter.get_fids([normalized]) if dest_adapter is not None else []) or []
             match = None
             for item in fid_list:
                 item_path = item.get("file_path") or item.get("path") or item.get("filePath")
@@ -1070,7 +1132,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         except Exception:
             dest_fid = None
         if dest_fid:
-            listing = adapter.ls_dir(dest_fid, max_items=2000) or {}
+            listing = (dest_adapter.ls_dir(dest_fid, max_items=2000) if dest_adapter is not None else {}) or {}
             dir_file_list = (((listing or {}).get("data") or {}).get("list")) or []
             for raw in dir_file_list:
                 if _bool_is_dir(raw):
@@ -1084,8 +1146,14 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     mr = MagicRename(magic_regex=get_enabled_magic_regex_map(db))
     mr.set_taskname(taskname)
     pattern, replace = mr.magic_regex_conv(pattern, replace)
-    compiled_search = re.compile(pattern) if pattern else None
-    compiled_subdir = re.compile(update_subdir) if update_subdir else None
+    try:
+        compiled_search = re.compile(pattern) if pattern else None
+    except re.error as e:
+        raise bad_request("TASK_REGEX_INVALID", f"pattern 正则不合法: {e}")
+    try:
+        compiled_subdir = re.compile(update_subdir) if update_subdir else None
+    except re.error as e:
+        raise bad_request("TASK_REGEX_INVALID", f"update_subdir 正则不合法: {e}")
     video_exts = {
         ".mp4",
         ".mkv",
@@ -1100,6 +1168,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         ".mpg",
         ".mpeg",
         ".3gp",
+        ".cas",
     }
 
     def _is_video_name(name: str) -> bool:

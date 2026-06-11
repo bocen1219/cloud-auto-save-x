@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -10,6 +12,7 @@ from sqlalchemy.orm import Session
 from treelib import Tree
 
 from app.core.errors import bad_request
+from app.db.session import SessionLocal
 from app.extensions.runtime.account_manager import DatabaseAccountManager
 from app.extensions.runtime.drama_executor import DramaTaskExecutor, SkipTask
 from app.extensions.runtime.execution_log import ExecutionLog
@@ -18,6 +21,18 @@ from app.extensions.runtime.plugin_loader import sync_plugin_definitions
 from app.extensions.runtime.plugin_registry import PluginRegistry
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
+
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate(s: str, max_len: int) -> str:
+    s = str(s or "")
+    if max_len <= 0:
+        return ""
+    if len(s) <= max_len:
+        return s
+    return f"{s[:max_len]}...(truncated,len={len(s)})"
 
 
 @dataclass(slots=True)
@@ -81,9 +96,24 @@ class TaskExecutor:
 
     def _execute_drama_task(self, adapter: Any, task_data: dict[str, Any], log: ExecutionLog | None) -> Tree:
         executor = DramaTaskExecutor(adapter=adapter, task_data=task_data, log=log)
-        return executor.execute()
+        tree = executor.execute()
+        try:
+            setattr(tree, "_transfer_count", int(getattr(executor, "transfer_count", 0) or 0))
+        except Exception:
+            pass
+        return tree
 
-    def run_task(self, task: Task, *, log: ExecutionLog | None = None, persist_execution: bool = True) -> TaskExecution:
+    def run_task(
+        self,
+        task: Task,
+        *,
+        log: ExecutionLog | None = None,
+        persist_execution: bool = True,
+        account_manager: DatabaseAccountManager | None = None,
+        init_account_for_task: bool = True,
+        defer_plugins: bool = False,
+        keep_runtime_tree: bool = False,
+    ) -> TaskExecution:
         if not task.enabled:
             raise bad_request('TASK_DISABLED', '任务已禁用')
 
@@ -96,8 +126,20 @@ class TaskExecutor:
         log.line(f"保存路径: {task.savepath}")
         log.line("")
 
-        sync_plugin_definitions(self.db)
-        account_manager = DatabaseAccountManager(self.db)
+        if not defer_plugins:
+            try:
+                with SessionLocal() as pdb:
+                    sync_plugin_definitions(pdb)
+                    pdb.commit()
+            except Exception:
+                pass
+            try:
+                self.db.expire_all()
+            except Exception:
+                pass
+        external_manager = account_manager is not None
+        if account_manager is None:
+            account_manager = DatabaseAccountManager(self.db)
         task_data = self._task_to_dict(task)
         try:
             from app.services.magic_regex import get_enabled_magic_regex_map
@@ -166,36 +208,48 @@ class TaskExecutor:
                     task_data["tmdb_series_title"] = None
             else:
                 task_data["tmdb_series_title"] = None
-        account_manager.init_for_tasks([task_data])
-        registry = PluginRegistry(self.db)
-        log.set_stage("load_plugins")
-        # log.section("载入插件")
-        plugins = registry.load_active_plugins()
-        if plugins:
-            # log.line("启用插件: " + ", ".join([p["definition"].plugin_key for p in plugins]))
-            for item in plugins:
-                definition = item.get("definition")
-                config = item.get("config")
-                instance = item.get("instance")
-                key = getattr(definition, "plugin_key", None) or ""
-                rs = getattr(config, "runtime_status", None)
-                err = getattr(config, "last_error", None)
-                active = bool(getattr(instance, "is_active", False))
-                meta = []
-                if rs:
-                    meta.append(f"status={rs}")
-                meta.append(f"is_active={'Y' if active else 'N'}")
-                if err:
-                    meta.append(f"error={str(err)}")
-                # log.line(f"- {key} " + " ".join(meta))
-        else:
-            log.line("启用插件: (无)")
+        if init_account_for_task:
+            account_manager.init_for_tasks([task_data])
         default_adapter = account_manager.get_default_adapter()
-        log.set_stage("plugin_task_before")
-        # log.section("插件前置")
-        task_list = PluginHookRunner.task_before(plugins, [task_data], default_adapter, emit_line=log.line)
-        task_data = task_list[0] if task_list else task_data
+        plugins = []
+        should_defer_plugins = bool(defer_plugins) or str(task_data.get("task_type") or "") == "drama"
+        if not should_defer_plugins:
+            registry = PluginRegistry(self.db)
+            log.set_stage("load_plugins")
+            # log.section("载入插件")
+            plugins = registry.load_active_plugins()
+            if plugins:
+                # log.line("启用插件: " + ", ".join([p["definition"].plugin_key for p in plugins]))
+                for item in plugins:
+                    definition = item.get("definition")
+                    config = item.get("config")
+                    instance = item.get("instance")
+                    key = getattr(definition, "plugin_key", None) or ""
+                    rs = getattr(config, "runtime_status", None)
+                    err = getattr(config, "last_error", None)
+                    active = bool(getattr(instance, "is_active", False))
+                    meta = []
+                    if rs:
+                        meta.append(f"status={rs}")
+                    meta.append(f"is_active={'Y' if active else 'N'}")
+                    if err:
+                        meta.append(f"error={str(err)}")
+                    # log.line(f"- {key} " + " ".join(meta))
+            else:
+                log.line("启用插件: (无)")
+            log.set_stage("plugin_task_before")
+            # log.section("插件前置")
+            task_list = PluginHookRunner.task_before(plugins, [task_data], default_adapter, emit_line=log.line)
+            task_data = task_list[0] if task_list else task_data
         adapter = account_manager.get_adapter_for_task(task_data)
+        if adapter is None and external_manager:
+            try:
+                fallback_manager = DatabaseAccountManager(self.db)
+                fallback_manager.init_for_tasks([task_data])
+                account_manager = fallback_manager
+                adapter = account_manager.get_adapter_for_task(task_data)
+            except Exception:
+                adapter = None
         started_at = datetime.now()
         task_id = int(getattr(task, "id", 0) or 0)
         snapshot_row = None
@@ -203,14 +257,14 @@ class TaskExecutor:
         if adapter is None:
             log.set_stage("select_account")
             log.section("验证账户")
-            log.line("FAIL: 没有匹配的驱动账号")
+            log.line("FAIL: 没有可用的驱动账号")
             log.set_stage("end")
             execution = TaskExecution(
                 task_id=task_id,
                 status='failed',
                 started_at=started_at,
                 finished_at=datetime.now(),
-                message='没有匹配的驱动账号',
+                message='没有可用的驱动账号',
                 stage=log.stage,
                 run_log=log.render(),
                 adapter_snapshot=json.dumps({}, ensure_ascii=False),
@@ -242,39 +296,102 @@ class TaskExecutor:
                 log.set_stage("execute_generic")
                 log.section("转存任务")
                 tree = self._execute_with_adapter(adapter, task_data)
-            log.set_stage("plugin_run")
-            log.section("插件执行")
-            if not plugins:
-                log.line("无可执行插件")
-            else:
-                for item in plugins:
-                    definition = item.get("definition")
-                    instance = item.get("instance")
-                    key = getattr(definition, "plugin_key", None) or ""
-                    if not bool(getattr(instance, "is_active", False)):
-                        # log.line(f"SKIP: {key}（is_active=false）")
-                        continue
-                    if not hasattr(instance, "run"):
-                        log.line(f"SKIP: {key}（缺少 run）")
-                        continue
-                    log.line(f"RUN: {key}")
-            task_data = PluginHookRunner.run(plugins, task_data, adapter, tree, emit_line=log.line)
-            log.set_stage("plugin_task_after")
-            log.section("插件收尾")
-            log.line("说明: task_after 为可选钩子，缺少 task_after 不影响插件在“插件执行(run)”阶段运行。")
-            if plugins:
-                for item in plugins:
-                    definition = item.get("definition")
-                    instance = item.get("instance")
-                    key = getattr(definition, "plugin_key", None) or ""
-                    if not bool(getattr(instance, "is_active", False)):
-                        # log.line(f"SKIP: {key}（task_after, is_active=false）")
-                        continue
-                    if not hasattr(instance, "task_after"):
-                        log.line(f"INFO: {key}（无 task_after）")
-                        continue
-                    log.line(f"RUN: {key}（task_after）")
-            PluginHookRunner.task_after(plugins, [task_data], default_adapter or adapter, emit_line=log.line)
+            has_new_files = False
+            if str(task_data.get("task_type") or "") == "drama":
+                transfer_count = None
+                if hasattr(tree, "_transfer_count"):
+                    try:
+                        transfer_count = int(getattr(tree, "_transfer_count") or 0)
+                    except Exception:
+                        transfer_count = 0
+                if transfer_count is None:
+                    try:
+                        transfer_count = int(getattr(tree, "size", lambda: 0)() > 1)
+                    except Exception:
+                        transfer_count = 0
+                has_new_files = bool(transfer_count)
+            if keep_runtime_tree:
+                setattr(task, "_runtime_tree", tree)
+            setattr(task, "_runtime_task_data", task_data)
+            setattr(task, "_runtime_adapter", adapter)
+            setattr(task, "_runtime_has_new_files", has_new_files)
+            if not defer_plugins:
+                if str(task_data.get("task_type") or "") == "drama":
+                    if not has_new_files:
+                        log.set_stage("plugin_run")
+                        log.section("插件执行")
+                        log.line("跳过: 本次无新增文件")
+                    else:
+                        registry = PluginRegistry(self.db)
+                        log.set_stage("load_plugins")
+                        plugins = registry.load_active_plugins()
+                        log.set_stage("plugin_run")
+                        log.section("插件执行")
+                        if not plugins:
+                            log.line("无可执行插件")
+                        else:
+                            for item in plugins:
+                                definition = item.get("definition")
+                                instance = item.get("instance")
+                                key = getattr(definition, "plugin_key", None) or ""
+                                if not bool(getattr(instance, "is_active", False)):
+                                    log.line(f"SKIP: {key}（is_active=false）")
+                                    continue
+                                if not hasattr(instance, "run"):
+                                    log.line(f"SKIP: {key}（缺少 run）")
+                                    continue
+                                log.line(f"RUN: {key}")
+                        task_data = PluginHookRunner.run(plugins, task_data, adapter, tree, emit_line=log.line)
+                        log.set_stage("plugin_task_after")
+                        log.section("插件收尾")
+                        log.line("说明: task_after 为可选钩子，缺少 task_after 不影响插件在“插件执行(run)”阶段运行。")
+                        if plugins:
+                            for item in plugins:
+                                definition = item.get("definition")
+                                instance = item.get("instance")
+                                key = getattr(definition, "plugin_key", None) or ""
+                                if not bool(getattr(instance, "is_active", False)):
+                                    log.line(f"SKIP: {key}（is_active=false）")
+                                    continue
+                                if not hasattr(instance, "task_after"):
+                                    log.line(f"INFO: {key}（无 task_after）")
+                                    continue
+                                log.line(f"RUN: {key}（task_after）")
+                        PluginHookRunner.task_after(plugins, [task_data], default_adapter or adapter, emit_line=log.line)
+                else:
+                    log.set_stage("plugin_run")
+                    log.section("插件执行")
+                    if not plugins:
+                        log.line("无可执行插件")
+                    else:
+                        for item in plugins:
+                            definition = item.get("definition")
+                            instance = item.get("instance")
+                            key = getattr(definition, "plugin_key", None) or ""
+                            if not bool(getattr(instance, "is_active", False)):
+                                # log.line(f"SKIP: {key}（is_active=false）")
+                                continue
+                            if not hasattr(instance, "run"):
+                                log.line(f"SKIP: {key}（缺少 run）")
+                                continue
+                            log.line(f"RUN: {key}")
+                    task_data = PluginHookRunner.run(plugins, task_data, adapter, tree, emit_line=log.line)
+                    log.set_stage("plugin_task_after")
+                    log.section("插件收尾")
+                    log.line("说明: task_after 为可选钩子，缺少 task_after 不影响插件在“插件执行(run)”阶段运行。")
+                    if plugins:
+                        for item in plugins:
+                            definition = item.get("definition")
+                            instance = item.get("instance")
+                            key = getattr(definition, "plugin_key", None) or ""
+                            if not bool(getattr(instance, "is_active", False)):
+                                # log.line(f"SKIP: {key}（task_after, is_active=false）")
+                                continue
+                            if not hasattr(instance, "task_after"):
+                                log.line(f"INFO: {key}（无 task_after）")
+                                continue
+                            log.line(f"RUN: {key}（task_after）")
+                    PluginHookRunner.task_after(plugins, [task_data], default_adapter or adapter, emit_line=log.line)
             if persist_execution and task_id > 0:
                 try:
                     from app.services.task_savepath_snapshot import capture_and_upsert_snapshot
@@ -331,6 +448,17 @@ class TaskExecutor:
             status = 'skipped' if isinstance(exc, SkipTask) else 'failed'
             stage = log.stage or "unknown"
             message = str(exc).strip() or type(exc).__name__
+            try:
+                logger.exception(
+                    "任务执行异常 task_id=%s task_uid=%s task_type=%s stage=%s err=%s",
+                    task_id,
+                    str(getattr(task, "task_uid", "") or ""),
+                    str(getattr(task, "task_type", "") or ""),
+                    stage,
+                    message,
+                )
+            except Exception:
+                pass
             if (
                 status == "failed"
                 and str(getattr(task, "task_type", "") or "") == "drama"
@@ -342,6 +470,7 @@ class TaskExecutor:
                     self.db.flush()
             log.section("异常")
             log.line(f"阶段={stage}: {message}")
+
             log.set_stage(stage)
             log.section("程序结束")
             finished_at_local = datetime.now()
@@ -383,10 +512,20 @@ class TaskExecutor:
         )
         if not persist_execution:
             execution.id = 0
+            setattr(execution, "_has_new_files", bool(getattr(task, "_runtime_has_new_files", False)))
+            if keep_runtime_tree:
+                setattr(execution, "_runtime_tree", getattr(task, "_runtime_tree", None))
+            setattr(execution, "_runtime_task_data", getattr(task, "_runtime_task_data", None))
+            setattr(execution, "_runtime_adapter", getattr(task, "_runtime_adapter", None))
             return execution
         self.db.add(execution)
         self.db.flush()
         if snapshot_row is not None:
             snapshot_row.task_execution_id = execution.id
             self.db.flush()
+        setattr(execution, "_has_new_files", bool(getattr(task, "_runtime_has_new_files", False)))
+        if keep_runtime_tree:
+            setattr(execution, "_runtime_tree", getattr(task, "_runtime_tree", None))
+        setattr(execution, "_runtime_task_data", getattr(task, "_runtime_task_data", None))
+        setattr(execution, "_runtime_adapter", getattr(task, "_runtime_adapter", None))
         return execution

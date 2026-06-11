@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   browseLocalSync,
+  cancelSyncExecution,
   createSyncTask,
   deleteSyncTask,
   fetchSyncExecutionFiles,
@@ -12,6 +13,7 @@ import {
   updateSyncTask,
 } from '@/api/syncTasks'
 import { fetchTasks } from '@/api/tasks'
+import { fetchSyncPlugins } from '@/api/extensions'
 import { SYNC_RUN, SYNC_WRITE } from '@/constants/permissions'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useAuthStore } from '@/stores/auth'
@@ -19,6 +21,7 @@ import { browseOpenList } from '@/api/openlist'
 import type { PathBrowseItem, PathBrowsePath } from '@/types/pathBrowse'
 import type { SyncExecutionItem, SyncMode, SyncTaskItem } from '@/types/syncTasks'
 import type { TaskItem } from '@/types/tasks'
+import type { PluginItem } from '@/types/extensions'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.permissions.includes(SYNC_WRITE))
@@ -30,6 +33,22 @@ const submitting = ref(false)
 const tasks = ref<SyncTaskItem[]>([])
 const executionsMap = ref(new Map<number, SyncExecutionItem[]>())
 const dramaTasks = ref<TaskItem[]>([])
+const plugins = ref<PluginItem[]>([])
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? {}))
+}
+
+const activePlugins = computed(() => {
+  return [...plugins.value]
+    .filter((item) => Boolean(item.installed) && Boolean(item.enabled))
+    .sort((a, b) => {
+      const ap = Number(a.priority) || 0
+      const bp = Number(b.priority) || 0
+      if (ap !== bp) return ap - bp
+      return String(a.plugin_key).localeCompare(String(b.plugin_key))
+    })
+})
 
 const dialogWidth = computed(() => (isMobile.value ? '100%' : '900px'))
 const dialogTop = computed(() => (isMobile.value ? '0' : '6vh'))
@@ -83,6 +102,7 @@ const drawer = reactive({
   targetType: 'openlist',
   targetPath: '/',
   dramaTaskUids: [] as string[],
+  addition: {} as Record<string, any>,
   overwrite: false,
   one_way_delete_extras: false,
   force_refresh: false,
@@ -99,6 +119,7 @@ const runLogDialog = reactive({
   stage: '',
   message: '',
   syncTaskId: 0,
+  executionId: 0,
   startedAt: '',
 })
 
@@ -123,11 +144,20 @@ const runFileStats = reactive({
 
 const runFileView = ref<'list' | 'tree'>('list')
 let runPollTimer: any = null
+let runPollInFlight = false
+let runPollDelayMs = 3000
 let runFileIndex: Map<string, number> = new Map()
 let runFileLoadedExecutionId = 0
+const runFileTreeRef = ref<any>(null)
+const runFileTreeExpandedKeys = ref<string[]>([])
 
 const runLogPre = ref<HTMLElement | null>(null)
 let runLogController: AbortController | null = null
+let runLogClosing = false
+
+let statusPollTimer: any = null
+let statusPollInFlight = false
+let statusPollDelayMs = 3000
 
 const pathPicker = reactive({
   visible: false,
@@ -347,19 +377,127 @@ function isDbRunning(taskId: number) {
   return Boolean(exe && String(exe.status || '') === 'running' && !exe.finished_at)
 }
 
+function isDbAborting(taskId: number) {
+  const exe = lastExecution(taskId)
+  if (!exe) return false
+  if (String(exe.status || '') !== 'running' || exe.finished_at) return false
+  return String(exe.stage || '') === 'aborting' || Boolean((exe as any).cancel_requested_at)
+}
+
 function anyTaskRunning() {
   return runLogDialog.status === 'running' && runLogDialog.syncTaskId > 0
+}
+
+function stopStatusPoll() {
+  if (statusPollTimer) {
+    clearTimeout(statusPollTimer)
+    statusPollTimer = null
+  }
+  statusPollInFlight = false
+}
+
+async function refreshRunningStatuses() {
+  const ids = tasks.value.filter((t) => isDbRunning(t.id)).map((t) => t.id)
+  if (!ids.length) return
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const exe = await fetchSyncExecutionLatest(id, { max_log_chars: 200 })
+        return { id, exe }
+      } catch {
+        return { id, exe: null as any }
+      }
+    }),
+  )
+
+  const next = new Map(executionsMap.value)
+  for (const { id, exe } of results) {
+    if (!exe) continue
+    const list = [...(next.get(id) || [])]
+    const idx = list.findIndex((x) => Number(x?.id) === Number(exe.id))
+    if (idx >= 0) list.splice(idx, 1, exe)
+    else list.unshift(exe)
+    next.set(id, list)
+  }
+  executionsMap.value = next
+}
+
+function startStatusPoll() {
+  stopStatusPoll()
+  statusPollDelayMs = 3000
+
+  const computeNextDelay = (costMs: number) => {
+    let base = 3000
+    if (runLogController) base = 8000
+
+    let next = base
+    if (costMs >= 4000) next = 10000
+    else if (costMs >= 2500) next = 8000
+    else if (costMs >= 1500) next = 5000
+    return Math.max(base, next)
+  }
+
+  const schedule = (delayMs: number) => {
+    if (statusPollTimer) clearTimeout(statusPollTimer)
+    statusPollDelayMs = delayMs
+    statusPollTimer = setTimeout(tick, delayMs)
+  }
+
+  const tick = async () => {
+    if (statusPollInFlight) return schedule(Math.max(statusPollDelayMs, 3000))
+    if (!tasks.value.some((t) => isDbRunning(t.id))) return stopStatusPoll()
+
+    statusPollInFlight = true
+    const t0 = Date.now()
+    try {
+      await refreshRunningStatuses()
+    } finally {
+      statusPollInFlight = false
+    }
+
+    const cost = Date.now() - t0
+    schedule(computeNextDelay(cost))
+  }
+
+  schedule(runLogController ? 3000 : 1500)
+}
+
+watch(
+  () => tasks.value.map((t) => `${t.id}:${isDbRunning(t.id) ? '1' : '0'}`).join(','),
+  () => {
+    const hasRunning = tasks.value.some((t) => isDbRunning(t.id))
+    if (hasRunning) startStatusPoll()
+    else stopStatusPoll()
+  },
+)
+
+async function stopTask(row: SyncTaskItem) {
+  if (!isDbRunning(row.id) || isDbAborting(row.id)) return
+  const exe = lastExecution(row.id)
+  const executionId = Number(exe?.id) || 0
+  if (!executionId) return
+  await cancelSyncExecution(row.id, executionId, { message: '用户停止' })
+  await loadData()
+}
+
+async function confirmStopTask(row: SyncTaskItem) {
+  if (!isDbRunning(row.id) || isDbAborting(row.id)) return
+  await ElMessageBox.confirm(`确定停止正在运行的同步任务「${row.name}」？`, '停止确认', { type: 'warning' })
+  await stopTask(row)
+  ElMessage.success('已请求停止')
 }
 
 async function loadData() {
   loading.value = true
   try {
-    const [data, taskRows] = await Promise.all([
+    const [data, taskRows, pluginRows] = await Promise.all([
       fetchSyncTasks(),
       fetchTasks().catch(() => [] as TaskItem[]),
+      fetchSyncPlugins().catch(() => [] as PluginItem[]),
     ])
     tasks.value = data
     dramaTasks.value = (taskRows || []).filter((t) => String(t.task_type || '') === 'drama')
+    plugins.value = pluginRows || []
     const mapping = new Map<number, SyncExecutionItem[]>()
     await Promise.all(
       data.map(async (t) => {
@@ -372,6 +510,13 @@ async function loadData() {
       }),
     )
     executionsMap.value = mapping
+    const hasRunning = data.some((t) => {
+      const list = mapping.get(t.id) || []
+      const exe = list.length ? [...list].sort((a, b) => Date.parse(String(b.started_at || '')) - Date.parse(String(a.started_at || '')))[0] : null
+      return Boolean(exe && String(exe.status || '') === 'running' && !exe.finished_at)
+    })
+    if (hasRunning) startStatusPoll()
+    else stopStatusPoll()
   } finally {
     loading.value = false
   }
@@ -389,12 +534,14 @@ function openCreate() {
   drawer.targetType = 'openlist'
   drawer.targetPath = '/'
   drawer.dramaTaskUids = []
+  drawer.addition = {}
   drawer.overwrite = false
   drawer.one_way_delete_extras = false
   drawer.force_refresh = true
   drawer.concurrency = 4
   drawer.request_interval_seconds = 1
   drawer.openlist_copy_batch_size = 10
+  syncDrawerAddition({})
 }
 
 function openEdit(row: SyncTaskItem) {
@@ -409,12 +556,37 @@ function openEdit(row: SyncTaskItem) {
   drawer.targetType = row.target.type
   drawer.targetPath = row.target.path
   drawer.dramaTaskUids = [...(row.drama_task_uids || [])]
+  drawer.addition = clone((row as any).addition || {})
   drawer.overwrite = Boolean(row.strategy?.overwrite)
   drawer.one_way_delete_extras = Boolean(row.strategy?.one_way_delete_extras)
   drawer.force_refresh = Boolean(row.strategy?.force_refresh)
   drawer.concurrency = Number(row.strategy?.concurrency ?? 4) || 4
   drawer.request_interval_seconds = Number(row.strategy?.request_interval_seconds ?? 0) || 0
   drawer.openlist_copy_batch_size = Number(row.strategy?.openlist_copy_batch_size ?? 10) || 10
+  syncDrawerAddition(drawer.addition)
+}
+
+function syncDrawerAddition(value: any) {
+  const base: any = value && typeof value === 'object' && !Array.isArray(value) ? clone(value) : {}
+  for (const plugin of activePlugins.value) {
+    const key = plugin.plugin_key
+    const defaultCfg = clone(plugin.default_task_config || {})
+    const currentCfg: any = base[key]
+    if (!currentCfg || typeof currentCfg !== 'object' || Array.isArray(currentCfg)) {
+      base[key] = defaultCfg
+      continue
+    }
+    for (const [k, v] of Object.entries(defaultCfg)) {
+      if (!(k in currentCfg)) currentCfg[k] = clone(v)
+    }
+    for (const field of plugin.task_config_fields || []) {
+      const fieldKey = String((field as any).key || '').trim()
+      if (!fieldKey) continue
+      if (fieldKey in currentCfg) continue
+      if ((field as any).default !== undefined) currentCfg[fieldKey] = clone((field as any).default)
+    }
+  }
+  drawer.addition = base
 }
 
 async function submitDrawer() {
@@ -431,6 +603,7 @@ async function submitDrawer() {
       source: { type: String(drawer.sourceType), path: String(drawer.sourcePath || '') },
       target: { type: String(drawer.targetType), path: String(drawer.targetPath || '') },
       drama_task_uids: [...(drawer.dramaTaskUids || [])],
+      addition: clone(drawer.addition || {}),
       strategy: {
         overwrite: Boolean(drawer.overwrite),
         one_way_delete_extras: Boolean(drawer.one_way_delete_extras),
@@ -474,12 +647,31 @@ function parseSseBlock(block: string) {
 
 function appendRunLine(text: string) {
   runLogDialog.content += `${text}\n`
+  scrollRunLogToBottom()
+}
+
+function scrollRunLogToBottom() {
   nextTick(() => {
     const el = runLogPre.value
     if (!el) return
     el.scrollTop = el.scrollHeight
   })
 }
+
+watch(
+  () => runLogDialog.visible,
+  (v) => {
+    if (v) scrollRunLogToBottom()
+  },
+)
+
+watch(
+  () => runLogDialog.content,
+  () => {
+    if (!runLogDialog.visible) return
+    scrollRunLogToBottom()
+  },
+)
 
 function resetRunFileStats() {
   runFileStats.total_files = 0
@@ -491,6 +683,7 @@ function resetRunFileStats() {
   runFileStats.events = []
   runFileIndex = new Map()
   runFileLoadedExecutionId = 0
+  runFileTreeExpandedKeys.value = []
 }
 
 function upsertFileEvent(item: SyncFileEvent) {
@@ -503,8 +696,53 @@ function upsertFileEvent(item: SyncFileEvent) {
     return
   }
   const prev = runFileStats.events[idx]
-  runFileStats.events.splice(idx, 1, { ...prev, ...item })
+  const next = { ...prev, ...item } as SyncFileEvent
+  if (item.size === undefined) next.size = prev.size
+  if (item.message === undefined) next.message = prev.message
+  runFileStats.events.splice(idx, 1, next)
 }
+
+function parsePercentMessage(value: any) {
+  const s = String(value || '').trim()
+  if (!s.endsWith('%')) return null
+  const raw = s.slice(0, -1).trim()
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(100, n))
+}
+
+function fileEventRank(item: SyncFileEvent) {
+  const st = String(item?.status || '')
+  const pct = parsePercentMessage(item?.message)
+  if (st === 'syncing' && pct != null) return 0
+  if (st === 'syncing') return 1
+  if (st === 'failed') return 2
+  if (st === 'pending') return 3
+  if (st === 'success') return 4
+  if (st === 'skipped') return 5
+  return 9
+}
+
+const runFileEventsSorted = computed(() => {
+  const rows = runFileStats.events || []
+  const indexed = rows.map((it) => {
+    const key = String(it?.path || '')
+    const idx = runFileIndex.get(key)
+    return { it, idx: idx === undefined ? 1e12 : idx }
+  })
+  indexed.sort((a, b) => {
+    const ra = fileEventRank(a.it)
+    const rb = fileEventRank(b.it)
+    if (ra !== rb) return ra - rb
+    if (ra === 0) {
+      const pa = parsePercentMessage(a.it.message) ?? -1
+      const pb = parsePercentMessage(b.it.message) ?? -1
+      if (pa !== pb) return pb - pa
+    }
+    return a.idx - b.idx
+  })
+  return indexed.map((x) => x.it)
+})
 
 function applyStatsObject(stats: any) {
   if (!stats || typeof stats !== 'object') return
@@ -582,12 +820,13 @@ async function loadExecutionFiles(syncTaskId: number, executionId: number) {
 }
 
 async function refreshLatestExecution(syncTaskId: number) {
-  const exe = await fetchSyncExecutionLatest(syncTaskId)
+  const exe = await fetchSyncExecutionLatest(syncTaskId, { max_log_chars: 200000 })
   if (!exe) return null
   runLogDialog.status = String(exe.status || '')
   runLogDialog.stage = String(exe.stage || '')
   runLogDialog.message = String(exe.message || '')
   runLogDialog.startedAt = String(exe.started_at || '')
+  runLogDialog.executionId = Number(exe.id) || 0
   if (exe.run_log) runLogDialog.content = String(exe.run_log || '')
   applyStatsObject(exe.stats)
   if (exe.id) await loadExecutionFiles(syncTaskId, Number(exe.id))
@@ -596,22 +835,49 @@ async function refreshLatestExecution(syncTaskId: number) {
 
 function stopRunPoll() {
   if (runPollTimer) {
-    clearInterval(runPollTimer)
+    clearTimeout(runPollTimer)
     runPollTimer = null
   }
+  runPollInFlight = false
 }
 
 function startRunPoll(syncTaskId: number) {
   stopRunPoll()
-  runPollTimer = setInterval(async () => {
-    if (!runLogDialog.visible) return
-    if (runLogDialog.syncTaskId !== syncTaskId) return
-    const exe = await refreshLatestExecution(syncTaskId).catch(() => null)
-    if (exe && String(exe.status || '') !== 'running') {
-      stopRunPoll()
-      await loadData()
-    }
-  }, 1000)
+  runPollDelayMs = 3000
+
+  const schedule = (delayMs: number) => {
+    if (runPollTimer) clearTimeout(runPollTimer)
+    runPollTimer = setTimeout(async () => {
+      if (!runLogDialog.visible) return
+      if (runLogDialog.syncTaskId !== syncTaskId) return
+      if (runLogController) return schedule(5000)
+      if (runPollInFlight) return schedule(runPollDelayMs)
+
+      runPollInFlight = true
+      const t0 = Date.now()
+      const exe = await refreshLatestExecution(syncTaskId).catch(() => null)
+      const cost = Date.now() - t0
+      runPollInFlight = false
+
+      if (!runLogDialog.visible) return
+      if (runLogDialog.syncTaskId !== syncTaskId) return
+
+      if (exe && String(exe.status || '') !== 'running') {
+        stopRunPoll()
+        await loadData()
+        return
+      }
+
+      let nextDelay = 3000
+      if (cost >= 2500) nextDelay = 10000
+      else if (cost >= 1500) nextDelay = 8000
+      else if (cost >= 800) nextDelay = 5000
+      runPollDelayMs = nextDelay
+      schedule(nextDelay)
+    }, delayMs)
+  }
+
+  schedule(0)
 }
 
 const runFileTreeData = computed(() => {
@@ -662,12 +928,45 @@ const runFileTreeData = computed(() => {
   return root
 })
 
-function onRunLogDialogClosed() {
+watch(
+  () => runFileTreeData.value,
+  (rows) => {
+    const firstKey = (Array.isArray(rows) && rows[0] && (rows[0] as any).key) ? String((rows[0] as any).key) : ''
+    if (firstKey && runFileTreeExpandedKeys.value.length === 0) {
+      runFileTreeExpandedKeys.value = [firstKey]
+    }
+    nextTick(() => {
+      const tree = runFileTreeRef.value as any
+      if (tree && typeof tree.setExpandedKeys === 'function') {
+        tree.setExpandedKeys(runFileTreeExpandedKeys.value)
+      }
+    })
+  },
+  { deep: true },
+)
+
+function onRunFileTreeExpand(data: any) {
+  const key = String(data?.key || '')
+  if (!key) return
+  const set = new Set(runFileTreeExpandedKeys.value)
+  set.add(key)
+  runFileTreeExpandedKeys.value = Array.from(set)
+}
+
+function onRunFileTreeCollapse(data: any) {
+  const key = String(data?.key || '')
+  if (!key) return
+  runFileTreeExpandedKeys.value = runFileTreeExpandedKeys.value.filter((k) => k !== key)
+}
+
+async function onRunLogDialogClosed() {
   stopRunPoll()
   if (runLogController) {
+    runLogClosing = true
     runLogController.abort()
     runLogController = null
   }
+  await loadData().catch(() => null)
 }
 
 async function runSync(row: SyncTaskItem) {
@@ -675,6 +974,7 @@ async function runSync(row: SyncTaskItem) {
     runLogDialog.visible = true
     runLogDialog.title = `执行日志：${row.name}`
     runLogDialog.syncTaskId = row.id
+    runLogDialog.executionId = 0
     runLogDialog.status = 'running'
     runLogDialog.stage = ''
     runLogDialog.message = ''
@@ -702,6 +1002,7 @@ async function runSync(row: SyncTaskItem) {
   runLogDialog.message = ''
   runLogDialog.content = ''
   runLogDialog.syncTaskId = row.id
+  runLogDialog.executionId = 0
   runLogDialog.startedAt = ''
   resetRunFileStats()
   runFileView.value = 'list'
@@ -783,6 +1084,8 @@ async function runSync(row: SyncTaskItem) {
           runLogDialog.status = String(data?.status || '')
           runLogDialog.message = String(data?.message || '')
           const exe = data?.execution || null
+          const eid = Number(exe?.id) || 0
+          if (eid) runLogDialog.executionId = eid
           if (!runLogDialog.stage) {
             const s = String(exe?.stage || '')
             if (s) runLogDialog.stage = s
@@ -793,6 +1096,7 @@ async function runSync(row: SyncTaskItem) {
           }
           applyStatsObject(exe?.stats || null)
           if (runLogDialog.status === 'success') ElMessage.success('同步已完成')
+          else if (runLogDialog.status === 'aborted') ElMessage.warning(runLogDialog.message || '已停止')
           else ElMessage.error(runLogDialog.message || '同步失败')
           await loadData()
           runLogController = null
@@ -803,35 +1107,40 @@ async function runSync(row: SyncTaskItem) {
     if (runLogDialog.status === 'running') await loadData()
   } catch (e: any) {
     if (e?.name === 'AbortError') {
-      runLogDialog.status = 'aborted'
-      runLogDialog.message = '已停止'
-      await loadData()
+      if (runLogClosing) return
       return
     }
     runLogDialog.status = 'failed'
     runLogDialog.message = e?.message || String(e || '')
     ElMessage.error(runLogDialog.message || '执行失败')
   } finally {
+    runLogClosing = false
     if (runLogDialog.status !== 'running') {
       runLogController = null
       runLogDialog.syncTaskId = 0
+      runLogDialog.executionId = 0
       runLogDialog.startedAt = ''
     }
   }
 }
 
-function stopRunLogStream() {
-  if (runLogController) {
-    runLogController.abort()
-    runLogController = null
-    runLogDialog.status = 'aborted'
-    runLogDialog.message = '已停止'
-    runLogDialog.syncTaskId = 0
-    runLogDialog.startedAt = ''
-    stopRunPoll()
+async function cancelRunTask() {
+  if (runLogDialog.status !== 'running') return
+  if (String(runLogDialog.stage || '') === 'aborting') return
+  const syncTaskId = Number(runLogDialog.syncTaskId) || 0
+  const executionId = Number(runLogDialog.executionId || runFileLoadedExecutionId) || 0
+  if (!syncTaskId || !executionId) {
+    ElMessage.warning('尚未获取执行ID，请稍后再试')
     return
   }
-  stopRunPoll()
+  try {
+    await cancelSyncExecution(syncTaskId, executionId, { message: '用户停止' })
+    runLogDialog.stage = 'aborting'
+    runLogDialog.message = '已请求停止'
+    ElMessage.success('已请求停止')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '停止失败')
+  }
 }
 
 onMounted(loadData)
@@ -883,6 +1192,17 @@ onMounted(loadData)
             >
               {{ isDbRunning(row.id) ? '日志' : '执行' }}
             </el-button>
+            <el-button
+              v-if="canRun && isDbRunning(row.id)"
+              size="small"
+              text
+              bg
+              type="danger"
+              :disabled="!canRun || isDbAborting(row.id)"
+              @click="confirmStopTask(row)"
+            >
+              {{ isDbAborting(row.id) ? '停止中' : '停止' }}
+            </el-button>
           </div>
         </div>
 
@@ -899,7 +1219,7 @@ onMounted(loadData)
           <div style="font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 6px">最近执行</div>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
             <template v-if="isDbRunning(row.id)">
-              <el-tag type="warning" effect="plain">运行中</el-tag>
+              <el-tag type="warning" effect="plain">{{ isDbAborting(row.id) ? '停止中' : '运行中' }}</el-tag>
               <span style="color: var(--el-text-color-secondary)">
                 {{ String(lastExecution(row.id)?.started_at || '').slice(0, 19).replace('T', ' ') || '-' }}
               </span>
@@ -929,13 +1249,13 @@ onMounted(loadData)
     </div>
 
     <el-table v-else :data="filteredTasks" v-loading="loading" row-key="id" stripe>
-      <el-table-column prop="name" label="名称" min-width="150" />
-      <el-table-column label="启用" width="80">
+      <el-table-column prop="name" label="名称" min-width="120" />
+      <el-table-column label="启用" width="70">
         <template #default="{ row }">
           <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="模式" width="80">
+      <el-table-column label="模式" width="70">
         <template #default="{ row }">
           <el-tag :type="row.mode === 'two_way' ? 'warning' : 'info'">{{ modeText(row.mode) }}</el-tag>
         </template>
@@ -953,7 +1273,7 @@ onMounted(loadData)
       <el-table-column label="最近执行" min-width="160">
         <template #default="{ row }">
           <template v-if="isDbRunning(row.id)">
-            <el-tag type="warning">运行中</el-tag>
+            <el-tag type="warning">{{ isDbAborting(row.id) ? '停止中' : '运行中' }}</el-tag>
             <span style="margin-left: 8px; color: var(--el-text-color-secondary)">
               {{ String(lastExecution(row.id)?.started_at || '').slice(0, 19).replace('T', ' ') || '-' }}
             </span>
@@ -972,7 +1292,7 @@ onMounted(loadData)
           <span>{{ String(row.updated_at || '').slice(0, 19).replace('T', ' ') }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <div style="display: flex; gap: 6px; flex-wrap: wrap">
             <el-button
@@ -982,6 +1302,15 @@ onMounted(loadData)
               @click="runSync(row)"
             >
               {{ isDbRunning(row.id) ? '查看日志' : '执行' }}
+            </el-button>
+            <el-button
+              v-if="isDbRunning(row.id)"
+              size="small"
+              type="danger"
+              :disabled="!canRun || isDbAborting(row.id)"
+              @click="confirmStopTask(row)"
+            >
+              {{ isDbAborting(row.id) ? '停止中' : '停止' }}
             </el-button>
             <el-button size="small" :disabled="!canWrite || anyTaskRunning() || isDbRunning(row.id)" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" :disabled="!canWrite || anyTaskRunning() || isDbRunning(row.id)" @click="confirmDelete(row)">
@@ -1069,7 +1398,7 @@ onMounted(loadData)
           <el-form-item label="强制刷新目录">
             <el-switch v-model="drawer.force_refresh" />
           </el-form-item>
-          <el-form-item label="并发数量">
+          <el-form-item label="并发数量（Local<->Local同步使用）">
             <el-input-number v-model="drawer.concurrency" :min="1" :max="32" :style="{ width: isMobile ? '100%' : '' }" />
           </el-form-item>
           <el-form-item label="请求间隔秒">
@@ -1078,6 +1407,44 @@ onMounted(loadData)
           <el-form-item label="OpenList copy 批量大小">
             <el-input-number v-model="drawer.openlist_copy_batch_size" :min="1" :max="5000" :step="50" :style="{ width: isMobile ? '100%' : '' }" />
           </el-form-item>
+
+          <el-divider content-position="left">插件选项（同步任务）</el-divider>
+          <div v-if="!activePlugins.length" style="color: var(--el-text-color-secondary); margin-bottom: 12px">暂无同步插件。</div>
+          <div v-else style="display: flex; flex-direction: column; gap: 10px">
+            <div v-for="plugin in activePlugins" :key="plugin.plugin_key" style="border: 1px solid var(--el-border-color); border-radius: 8px; padding: 10px 12px">
+              <div style="font-weight: 600; margin-bottom: 6px">{{ plugin.plugin_key }}</div>
+              <el-form-item v-for="field in plugin.task_config_fields || []" :key="field.key" :label="field.label || field.key">
+                <el-switch
+                  v-if="field.input_type === 'switch'"
+                  v-model="drawer.addition[plugin.plugin_key][field.key]"
+                  active-text="开启"
+                  inactive-text="关闭"
+                />
+                <el-input-number
+                  v-else-if="field.input_type === 'number'"
+                  v-model="drawer.addition[plugin.plugin_key][field.key]"
+                  style="width: 100%"
+                />
+                <el-input
+                  v-else-if="field.input_type === 'textarea'"
+                  v-model="drawer.addition[plugin.plugin_key][field.key]"
+                  type="textarea"
+                  :rows="field.secret ? 4 : 3"
+                  :placeholder="field.placeholder || ''"
+                />
+                <el-input
+                  v-else
+                  v-model="drawer.addition[plugin.plugin_key][field.key]"
+                  :type="field.input_type === 'password' ? 'password' : 'text'"
+                  :placeholder="field.placeholder || ''"
+                  :show-password="field.input_type === 'password'"
+                />
+                <div v-if="field.description" style="color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.4; margin-top: 6px">
+                  {{ field.description }}
+                </div>
+              </el-form-item>
+            </div>
+          </div>
         </el-form>
 
         <div style="display: flex; gap: 10px; justify-content: flex-end">
@@ -1156,7 +1523,7 @@ onMounted(loadData)
         </el-tag>
         <span style="color: var(--el-text-color-secondary)">阶段：{{ runLogDialog.stage || '-' }}</span>
         <span style="color: var(--el-text-color-secondary)">结果：{{ runLogDialog.message || '-' }}</span>
-        <el-button size="small" :disabled="runLogDialog.status !== 'running'" @click="stopRunLogStream">停止查看</el-button>
+        <el-button size="small" :disabled="runLogDialog.status !== 'running' || runLogDialog.stage === 'aborting'" @click="cancelRunTask">停止任务</el-button>
       </div>
 
       <div :style="runStatsGridStyle">
@@ -1188,13 +1555,14 @@ onMounted(loadData)
       <el-progress :percentage="toPercent(runFileStats.done_files, runFileStats.total_files)" :stroke-width="10" style="margin-bottom: 12px" />
 
       <div v-if="runFileView === 'list'">
-        <el-table :data="runFileStats.events" size="small" style="width: 100%" :height="runEventsTableHeight">
+        <el-table :data="runFileEventsSorted" size="small" style="width: 100%" :height="runEventsTableHeight">
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
               <el-tag v-if="row.status === 'success'" type="success" size="small">OK</el-tag>
               <el-tag v-else-if="row.status === 'syncing'" type="info" size="small">SYNC</el-tag>
               <el-tag v-else-if="row.status === 'pending'" type="info" size="small">PEND</el-tag>
               <el-tag v-else-if="row.status === 'skipped'" type="warning" size="small">SKIP</el-tag>
+              <el-tag v-else-if="row.status === 'aborted'" type="warning" size="small">ABRT</el-tag>
               <el-tag v-else type="danger" size="small">FAIL</el-tag>
             </template>
           </el-table-column>
@@ -1215,19 +1583,57 @@ onMounted(loadData)
         </el-table>
       </div>
       <div v-else>
-        <el-tree :data="runFileTreeData" node-key="key" :expand-on-click-node="false" :style="runTreeStyle">
+        <el-tree
+          ref="runFileTreeRef"
+          :data="runFileTreeData"
+          node-key="key"
+          :expand-on-click-node="false"
+          :default-expanded-keys="runFileTreeExpandedKeys"
+          :style="runTreeStyle"
+          @node-expand="onRunFileTreeExpand"
+          @node-collapse="onRunFileTreeCollapse"
+        >
           <template #default="{ data }">
             <span>{{ data.label }}</span>
             <el-tag
               v-if="data.kind === 'file'"
               size="small"
-              :type="data.status === 'success' ? 'success' : data.status === 'skipped' ? 'warning' : data.status === 'syncing' || data.status === 'pending' ? 'info' : 'danger'"
+              :type="data.status === 'success' ? 'success' : data.status === 'skipped' || data.status === 'aborted' ? 'warning' : data.status === 'syncing' || data.status === 'pending' ? 'info' : 'danger'"
               style="margin-left: 8px"
             >
-              {{ data.status === 'success' ? 'OK' : data.status === 'skipped' ? 'SKIP' : data.status === 'syncing' ? 'SYNC' : data.status === 'pending' ? 'PEND' : 'FAIL' }}
+              {{
+                data.status === 'success'
+                  ? 'OK'
+                  : data.status === 'skipped'
+                    ? 'SKIP'
+                    : data.status === 'aborted'
+                      ? 'ABRT'
+                      : data.status === 'syncing'
+                        ? 'SYNC'
+                        : data.status === 'pending'
+                          ? 'PEND'
+                          : 'FAIL'
+              }}
             </el-tag>
           </template>
         </el-tree>
+      </div>
+
+      <el-divider content-position="left">原始日志</el-divider>
+      <div
+        ref="runLogPre"
+        style="
+          height: 78px;
+          overflow-y: auto;
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: var(--el-fill-color-light);
+          border: 1px solid var(--el-border-color-lighter);
+        "
+      >
+        <pre style="margin: 0; font-size: 12px; line-height: 22px; white-space: pre-wrap; word-break: break-word">{{
+          runLogDialog.content || ''
+        }}</pre>
       </div>
     </el-dialog>
   </div>

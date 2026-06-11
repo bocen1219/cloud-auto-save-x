@@ -32,6 +32,7 @@ class SyncTaskBase(BaseModel):
     mode: SyncMode = "one_way"
     strategy: SyncStrategy = Field(default_factory=SyncStrategy)
     drama_task_uids: list[str] = Field(default_factory=list)
+    addition: dict[str, Any] = Field(default_factory=dict)
 
 
 class SyncTaskCreateIn(SyncTaskBase):
@@ -46,6 +47,7 @@ class SyncTaskUpdateIn(BaseModel):
     mode: SyncMode | None = None
     strategy: SyncStrategy | None = None
     drama_task_uids: list[str] | None = None
+    addition: dict[str, Any] | None = None
 
 
 class SyncExecutionOut(BaseModel):
@@ -58,6 +60,9 @@ class SyncExecutionOut(BaseModel):
     run_log: str | None = None
     stats: dict[str, Any] = {}
     message: str | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_requested_by: int | None = None
+    cancel_message: str | None = None
 
 
 class SyncTaskOut(BaseModel):
@@ -70,9 +75,14 @@ class SyncTaskOut(BaseModel):
     mode: SyncMode
     strategy: SyncStrategy
     drama_task_uids: list[str] = Field(default_factory=list)
+    addition: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
 
 class SyncRunIn(BaseModel):
     strategy: SyncStrategy | None = None
+
+
+class SyncCancelIn(BaseModel):
+    message: str | None = Field(default=None, max_length=2000)

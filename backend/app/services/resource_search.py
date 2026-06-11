@@ -24,7 +24,6 @@ from app.services.invalid_share_links import list_invalid_shareurls
 SOURCE_KEYS = ("net", "cloudsaver", "pansou")
 EXTERNAL_TIMEOUT = (15, 200)
 logger = logging.getLogger(__name__)
-_uvicorn_logger = logging.getLogger("uvicorn.error")
 
 SUPPORTED_CLOUD_TYPES = {
     "quark",
@@ -132,11 +131,9 @@ def _log_debug(label: str, payload: Any) -> None:
         text = repr(_redact(payload))
     msg = f"{label}={_truncate_text(text)}"
     if _debug_enabled():
-        print(msg)
-        _uvicorn_logger.info(msg)
+        logger.info(msg)
     else:
-        print(msg)
-        _uvicorn_logger.debug(msg)
+        logger.debug(msg)
 
 
 def _loads(value: str) -> dict[str, Any]:
@@ -415,6 +412,8 @@ class CloudSaverClient:
                 if enable_filter and not _title_contains_keyword(str(item.get("title") or "")):
                     continue
                 title = _strip_html(item.get("title") or "").strip() or ""
+                if keyword and not _title_contains_keyword(title):
+                    continue
                 desc = _strip_html(item.get("desc") or item.get("content") or "").strip() or ""
                 tm = item.get("datetime") or item.get("time") or ""
                 if tm:
@@ -553,6 +552,15 @@ def fetch_task_suggestions(
 
     def net_search():
         try:
+            def clean_search_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                out = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if keyword not in item.get("title"):
+                        continue
+                    out.append(item)
+                return out
             if not rows["net"].enabled:
                 return []
             base_url = base64.b64decode("aHR0cHM6Ly9wYW5zZWFyY2guMTIzY2YudG9w").decode()
@@ -562,8 +570,8 @@ def fetch_task_suggestions(
 
             if isinstance(data, dict):
                 items = data.get("data") if isinstance(data.get("data"), list) else []
-                return items
-            return data if isinstance(data, list) else []
+                return clean_search_results(items)
+            return clean_search_results(items)
         except Exception:
             return []
 

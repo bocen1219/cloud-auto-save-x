@@ -1,4 +1,5 @@
 import json
+import logging
 import queue
 import threading
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.deps import CurrentUser, get_current_user, require_permissions
+from app.core.deps import CurrentUser, get_current_user, get_current_user_scoped, require_permissions, require_permissions_scoped
 from app.core.errors import ApiError
 from app.core.permissions import SYNC_READ, SYNC_RUN, SYNC_WRITE
 from app.db.session import SessionLocal, get_db
@@ -20,7 +21,7 @@ from app.models.sync_execution import SyncExecution
 from app.models.sync_task import SyncTask
 from app.models.sync_task_drama_link import SyncTaskDramaLink
 from app.schemas.sync_execution_files import SyncExecutionFileOut
-from app.schemas.sync_task import SyncExecutionOut, SyncRunIn, SyncTaskCreateIn, SyncTaskOut, SyncTaskUpdateIn
+from app.schemas.sync_task import SyncCancelIn, SyncExecutionOut, SyncRunIn, SyncTaskCreateIn, SyncTaskOut, SyncTaskUpdateIn
 from app.schemas.path_browse import PathBrowseIn, PathBrowseItemOut, PathBrowseOut, PathBrowsePathOut
 from app.services import audit
 from app.services.sync_tasks import (
@@ -35,6 +36,7 @@ from app.services.sync_tasks import (
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -45,6 +47,15 @@ def _task_out(item: SyncTask, *, drama_task_uids: list[str] | None = None) -> Sy
             strategy = json.loads(item.strategy_json)
         except Exception:
             strategy = {}
+    addition = {}
+    raw_addition = getattr(item, "addition_json", None)
+    if raw_addition:
+        try:
+            parsed = json.loads(raw_addition)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            addition = parsed
     return SyncTaskOut(
         id=item.id,
         uid=item.uid,
@@ -55,6 +66,7 @@ def _task_out(item: SyncTask, *, drama_task_uids: list[str] | None = None) -> Sy
         mode=item.mode,
         strategy=strategy,
         drama_task_uids=list(drama_task_uids or []),
+        addition=addition,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -79,7 +91,59 @@ def _execution_out(item: SyncExecution) -> SyncExecutionOut:
         run_log=item.run_log,
         stats=stats,
         message=item.message,
+        cancel_requested_at=getattr(item, "cancel_requested_at", None),
+        cancel_requested_by=getattr(item, "cancel_requested_by", None),
+        cancel_message=getattr(item, "cancel_message", None),
     )
+
+
+@router.post(
+    "/{sync_task_id:int}/executions/{sync_execution_id:int}/cancel",
+    response_model=SyncExecutionOut,
+    dependencies=[Depends(require_permissions(SYNC_RUN))],
+)
+def post_cancel_sync_execution(
+    request: Request,
+    sync_task_id: int,
+    sync_execution_id: int,
+    payload: SyncCancelIn | None = None,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    execution = (
+        db.execute(select(SyncExecution).where(SyncExecution.id == sync_execution_id, SyncExecution.sync_task_id == sync_task_id))
+        .scalars()
+        .first()
+    )
+    if execution is None:
+        raise ApiError(code="SYNC_EXECUTION_NOT_FOUND", message="同步执行不存在", http_status=404)
+    if str(execution.status or "") != "running" or execution.finished_at is not None:
+        raise ApiError(code="SYNC_EXECUTION_NOT_RUNNING", message="同步执行不在运行中", http_status=409)
+
+    if execution.cancel_requested_at is None:
+        now = datetime.now()
+        execution.cancel_requested_at = now
+        execution.cancel_requested_by = int(current.user.id)
+        execution.cancel_message = str(payload.message) if payload and payload.message else None
+        execution.stage = "aborting"
+        execution.message = "cancel requested"
+        execution.heartbeat_at = now
+
+        audit.write_audit_log(
+            db,
+            actor_user_id=current.user.id,
+            action="sync_task.execution.cancel",
+            target_type="sync_execution",
+            target_id=str(sync_execution_id),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            success=True,
+            detail=execution.cancel_message,
+        )
+        db.commit()
+        db.refresh(execution)
+
+    return _execution_out(execution)
 
 
 @router.get("", response_model=list[SyncTaskOut], dependencies=[Depends(require_permissions(SYNC_READ))])
@@ -105,6 +169,7 @@ def post_sync_task(request: Request, payload: SyncTaskCreateIn, current: Current
         mode=payload.mode,
         strategy=payload.strategy.model_dump(mode="json"),
         drama_task_uids=list(payload.drama_task_uids or []),
+        addition=payload.addition,
     )
     audit.write_audit_log(
         db,
@@ -164,11 +229,19 @@ def get_sync_task_executions(sync_task_id: int, current: CurrentUser = Depends(g
 
 
 @router.get("/{sync_task_id:int}/executions/latest", response_model=SyncExecutionOut | None, dependencies=[Depends(require_permissions(SYNC_READ))])
-def get_sync_task_execution_latest(sync_task_id: int, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_sync_task_execution_latest(
+    sync_task_id: int,
+    max_log_chars: int = 0,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     rows = list_sync_executions(db, sync_task_id, limit=1)
     if not rows:
         return None
-    return _execution_out(rows[0])
+    out = _execution_out(rows[0])
+    if max_log_chars and out.run_log and len(out.run_log) > max_log_chars:
+        out.run_log = out.run_log[-int(max_log_chars) :]
+    return out
 
 
 @router.get(
@@ -226,6 +299,15 @@ def post_run_sync_task(
     current: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    override = payload.strategy.model_dump(mode="json") if payload and payload.strategy else None
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "sync run request sync_task_id=%s user_id=%s ip=%s override=%s",
+            int(sync_task_id),
+            int(getattr(current.user, "id", 0) or 0),
+            request.client.host if request.client else None,
+            json.dumps(override, ensure_ascii=False) if override else None,
+        )
     running = (
         db.execute(
             select(SyncExecution)
@@ -236,10 +318,19 @@ def post_run_sync_task(
         .first()
     )
     if running is not None:
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("sync run rejected sync_task_id=%s running_execution_id=%s", int(sync_task_id), int(running.id))
         raise ApiError(code="SYNC_TASK_RUNNING", message="同步任务正在执行", http_status=409, detail=str(running.id))
     task = get_sync_task(db, sync_task_id)
-    override = payload.strategy.model_dump(mode="json") if payload and payload.strategy else None
     execution = SyncExecutor(db).run_sync_task(task, strategy_override=override)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "sync run finished sync_task_id=%s sync_execution_id=%s status=%s stage=%s",
+            int(sync_task_id),
+            int(getattr(execution, "id", 0) or 0),
+            str(getattr(execution, "status", "") or ""),
+            str(getattr(execution, "stage", "") or ""),
+        )
     audit.write_audit_log(
         db,
         actor_user_id=current.user.id,
@@ -256,37 +347,41 @@ def post_run_sync_task(
     return _execution_out(execution)
 
 
-@router.post("/{sync_task_id:int}/run/stream", dependencies=[Depends(require_permissions(SYNC_RUN))])
+@router.post("/{sync_task_id:int}/run/stream", dependencies=[Depends(require_permissions_scoped(SYNC_RUN))])
 def post_run_sync_task_stream(
     request: Request,
     sync_task_id: int,
     payload: SyncRunIn | None = None,
-    current: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(get_current_user_scoped),
 ):
-    running = (
-        db.execute(
-            select(SyncExecution)
-            .where(SyncExecution.sync_task_id == sync_task_id, SyncExecution.status == "running", SyncExecution.finished_at.is_(None))
-            .order_by(SyncExecution.started_at.desc())
-        )
-        .scalars()
-        .first()
-    )
-    if running is not None:
-        raise ApiError(code="SYNC_TASK_RUNNING", message="同步任务正在执行", http_status=409, detail=str(running.id))
     init_payload = {"sync_task_id": int(sync_task_id), "started_at": datetime.now().isoformat()}
-    audit.write_audit_log(
-        db,
-        actor_user_id=current.user.id,
-        action="sync_task.run.stream",
-        target_type="sync_task",
-        target_id=str(sync_task_id),
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        success=True,
-    )
-    db.commit()
+    with SessionLocal() as adb:
+        running = (
+            adb.execute(
+                select(SyncExecution)
+                .where(
+                    SyncExecution.sync_task_id == sync_task_id,
+                    SyncExecution.status == "running",
+                    SyncExecution.finished_at.is_(None),
+                )
+                .order_by(SyncExecution.started_at.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if running is not None:
+            raise ApiError(code="SYNC_TASK_RUNNING", message="同步任务正在执行", http_status=409, detail=str(running.id))
+        audit.write_audit_log(
+            adb,
+            actor_user_id=current.user.id,
+            action="sync_task.run.stream",
+            target_type="sync_task",
+            target_id=str(sync_task_id),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            success=True,
+        )
+        adb.commit()
 
     q: queue.Queue[tuple[str, object]] = queue.Queue()
     done_sentinel = object()
@@ -306,14 +401,36 @@ def post_run_sync_task_stream(
         with SessionLocal() as wdb:
             log = ExecutionLog(emit_line=emit_line, emit_stage=emit_stage, emit_progress=emit_progress)
             try:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "sync run(stream) start sync_task_id=%s user_id=%s ip=%s override=%s",
+                        int(sync_task_id),
+                        int(getattr(current.user, "id", 0) or 0),
+                        request.client.host if request.client else None,
+                        json.dumps(override, ensure_ascii=False) if override else None,
+                    )
                 wtask = get_sync_task(wdb, sync_task_id)
                 execution = SyncExecutor(wdb).run_sync_task(wtask, log=log, strategy_override=override)
                 wdb.commit()
                 wdb.refresh(execution)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "sync run(stream) finished sync_task_id=%s sync_execution_id=%s status=%s stage=%s",
+                        int(sync_task_id),
+                        int(getattr(execution, "id", 0) or 0),
+                        str(getattr(execution, "status", "") or ""),
+                        str(getattr(execution, "stage", "") or ""),
+                    )
                 q.put(("done", {"status": execution.status, "message": execution.message, "execution": _execution_out(execution).model_dump(mode="json")}))
             except Exception as exc:
                 wdb.rollback()
                 message = getattr(exc, "message", None) or str(exc).strip() or type(exc).__name__
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "sync run(stream) failed sync_task_id=%s err=%s",
+                        int(sync_task_id),
+                        message,
+                    )
                 q.put(
                     (
                         "done",

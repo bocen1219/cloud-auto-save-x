@@ -15,6 +15,7 @@ export async function createSyncTask(payload: {
   mode: string
   strategy: Record<string, any>
   drama_task_uids?: string[]
+  addition?: Record<string, any>
 }) {
   const { data } = await http.post<SyncTaskItem>('/sync-tasks', payload, { headers: { 'X-Silent-Toast': '1' } })
   return data
@@ -30,6 +31,7 @@ export async function updateSyncTask(
     mode: string
     strategy: Record<string, any>
     drama_task_uids: string[]
+    addition: Record<string, any>
   }>,
 ) {
   const { data } = await http.patch<SyncTaskItem>(`/sync-tasks/${syncTaskId}`, payload, { headers: { 'X-Silent-Toast': '1' } })
@@ -46,8 +48,11 @@ export async function fetchSyncExecutions(syncTaskId: number) {
   return data
 }
 
-export async function fetchSyncExecutionLatest(syncTaskId: number) {
-  const { data } = await http.get<SyncExecutionItem | null>(`/sync-tasks/${syncTaskId}/executions/latest`)
+export async function fetchSyncExecutionLatest(syncTaskId: number, payload?: { max_log_chars?: number }) {
+  const max_log_chars = payload?.max_log_chars != null ? Number(payload.max_log_chars) : 0
+  const params: Record<string, any> = {}
+  if (max_log_chars > 0) params.max_log_chars = max_log_chars
+  const { data } = await http.get<SyncExecutionItem | null>(`/sync-tasks/${syncTaskId}/executions/latest`, { params })
   return data
 }
 
@@ -60,6 +65,11 @@ export async function fetchSyncExecutionFiles(syncTaskId: number, executionId: n
 
 export async function runSyncTask(syncTaskId: number, payload?: { strategy?: Record<string, any> } | null) {
   const { data } = await http.post<SyncExecutionItem>(`/sync-tasks/${syncTaskId}/run`, payload || {})
+  return data
+}
+
+export async function cancelSyncExecution(syncTaskId: number, executionId: number, payload?: { message?: string | null } | null) {
+  const { data } = await http.post<SyncExecutionItem>(`/sync-tasks/${syncTaskId}/executions/${executionId}/cancel`, payload || {})
   return data
 }
 

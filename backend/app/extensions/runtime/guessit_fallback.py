@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from functools import lru_cache
 
+
+logger = logging.getLogger(__name__)
 
 _RE_CJK = re.compile(r"[\u4e00-\u9fff]+")
 _RE_SPECIAL = re.compile(r"[\|\%\$]+")
@@ -43,6 +47,7 @@ _VIDEO_EXTS = {
     ".mpg",
     ".mpeg",
     ".3gp",
+    ".cas",
 }
 
 
@@ -103,7 +108,7 @@ def _trace(tag: str | None, message: str) -> None:
     prefix = "[guessit_fallback]"
     if tag:
         prefix = f"{prefix}[{tag}]"
-    print(f"{prefix} {message}", flush=True)
+    logger.debug("%s %s", prefix, message)
 
 
 def sanitize_for_guessit(name: str) -> str:
@@ -206,7 +211,13 @@ _RE_STRICT_KNOWN_EP_RULES = _compile_strict_known_ep_rules()
 
 
 def _pick_known_episode_strict_detail(base: str) -> tuple[int | None, str | None]:
-    s = str(base or "").strip()
+    origin = str(base or "").strip()
+    if not origin:
+        return None, None
+    s = origin
+    root, ext = os.path.splitext(origin)
+    if root and ext and ext.lower() in _VIDEO_EXTS:
+        s = root.strip()
     if not s:
         return None, None
     for rule in _RE_STRICT_KNOWN_EP_RULES:
@@ -283,6 +294,7 @@ def _pick_year(value: object) -> int | None:
     return y
 
 
+@lru_cache(maxsize=4096)
 def _guessit_parse(
     sanitized: str,
     *,
@@ -295,16 +307,15 @@ def _guessit_parse(
         _trace(trace_tag, f"error: import guessit failed: {type(exc).__name__}: {exc}")
         return {}
 
-    opts = None
     mt = str(media_type or "").strip().lower()
-    if mt == "movie":
-        opts = {"type": "movie"}
-    elif mt == "tv":
-        opts = {"type": "episode"}
-
     try:
-        if opts is not None:
-            return guessit(sanitized, options=opts) or {}
+        if mt == "tv":
+            info = guessit(sanitized) or {}
+            if str(info.get("type") or "").lower() == "episode":
+                return info
+            return guessit(sanitized, options={"type": "episode"}) or {}
+        if mt == "movie":
+            return guessit(sanitized, options={"type": "movie"}) or {}
         return guessit(sanitized) or {}
     except Exception as exc:
         _trace(trace_tag, f"error: guessit() failed: {type(exc).__name__}: {exc}")
@@ -425,25 +436,18 @@ def guessit_episode_target(
     return target
 
 
-def guessit_episode_numbers(
-    file_name: str,
-    *,
-    tv_seasons: list[dict] | None = None,
-    trace_tag: str | None = None,
+@lru_cache(maxsize=4096)
+def _guessit_episode_numbers_cached(
+    sanitized_base: str,
+    tv_seasons_tuple: tuple | None,
 ) -> tuple[int | None, int | None]:
-    origin = str(file_name or "").strip()
-    base, ext = os.path.splitext(origin)
-    if not base or not ext:
-        return None, None
-    if ext.lower() not in _VIDEO_EXTS:
-        return None, None
-
-    strict_known_episode, _ = _pick_known_episode_strict_detail(base)
-    sanitized = sanitize_for_guessit(base)
-    if not sanitized:
-        return None, None
-
-    info = _guessit_parse(sanitized, media_type="tv", trace_tag=trace_tag)
+    """Cached implementation - tv_seasons must be tuple or None."""
+    tv_seasons = (
+        [{"season_number": s, "episode_count": e} for s, e in tv_seasons_tuple]
+        if tv_seasons_tuple
+        else None
+    )
+    info = _guessit_parse(sanitized_base, media_type="tv")
     guessed_is_episode = str(info.get("type") or "").lower() == "episode"
 
     season_raw = info.get("season")
@@ -451,16 +455,17 @@ def guessit_episode_numbers(
     episode = _pick_episode(info.get("episode")) if guessed_is_episode else None
     inferred_abs = False
 
+    strict_known_episode, _ = _pick_known_episode_strict_detail(sanitized_base)
     if strict_known_episode is not None:
         episode = strict_known_episode
         season = 0
         inferred_abs = True
     if episode is None:
-        episode = _pick_known_episode_strict(base)
+        episode = _pick_known_episode_strict(sanitized_base)
         if episode is not None:
             inferred_abs = True
         else:
-            episode = _pick_leading_episode(base)
+            episode = _pick_leading_episode(sanitized_base)
             if episode is not None:
                 inferred_abs = True
 
@@ -485,6 +490,36 @@ def guessit_episode_numbers(
     if season <= 0 or episode <= 0:
         return None, None
     return season, episode
+
+
+def guessit_episode_numbers(
+    file_name: str,
+    *,
+    tv_seasons: list[dict] | None = None,
+    trace_tag: str | None = None,
+) -> tuple[int | None, int | None]:
+    origin = str(file_name or "").strip()
+    base, ext = os.path.splitext(origin)
+    if not base or not ext:
+        return None, None
+    if ext.lower() not in _VIDEO_EXTS:
+        return None, None
+
+    sanitized = sanitize_for_guessit(base)
+    if not sanitized:
+        return None, None
+
+    # Convert tv_seasons to hashable tuple for caching
+    if tv_seasons:
+        tv_seasons_tuple = tuple(
+            (s.get("season_number", 0), s.get("episode_count", 0))
+            for s in tv_seasons
+            if isinstance(s, dict)
+        )
+    else:
+        tv_seasons_tuple = None
+
+    return _guessit_episode_numbers_cached(sanitized, tv_seasons_tuple)
 
 
 def guessit_media_target(

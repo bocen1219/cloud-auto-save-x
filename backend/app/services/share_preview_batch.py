@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import not_found
 from app.core.settings import settings
+from app.db.session import SessionLocal
 from app.extensions.runtime.account_manager import DatabaseAccountManager
 from app.extensions.runtime.adapter_registry import AdapterRegistry
 from app.models.drive_account import DriveAccount
@@ -156,6 +157,7 @@ video_exts = {
     ".mpg",
     ".mpeg",
     ".3gp",
+    ".cas",
 }
 
 
@@ -206,6 +208,17 @@ def _auto_resolve_latest_video(adapter, pwd_id: str, stoken: str, start_fid: str
 
 
 def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[SharePreviewBatchOut, bool]:
+    def _short_tx(fn):
+        with SessionLocal() as s:
+            s.expire_on_commit = False
+            try:
+                out = fn(s)
+                s.commit()
+                return out
+            except Exception:
+                s.rollback()
+                raise
+
     shareurls = [str(x or "").strip() for x in (payload.shareurls or [])]
     shareurls = [x for x in shareurls if x]
     shareurls = list(dict.fromkeys(shareurls))
@@ -214,9 +227,14 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
 
     cache_changed = False
     try:
-        purged = purge_old_preview_batch_cache(
-            db,
-            retention_seconds=int(getattr(settings, "tasks_share_preview_batch_db_cache_retention_seconds", 7 * 24 * 60 * 60) or 7 * 24 * 60 * 60),
+        purged = _short_tx(
+            lambda s: purge_old_preview_batch_cache(
+                s,
+                retention_seconds=int(
+                    getattr(settings, "tasks_share_preview_batch_db_cache_retention_seconds", 7 * 24 * 60 * 60)
+                    or 7 * 24 * 60 * 60
+                ),
+            )
         )
         if purged > 0:
             cache_changed = True
@@ -231,7 +249,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
             items.append(cached)
             continue
         try:
-            row, hit_changed = get_cached_preview_batch_item(db, shareurl=url)
+            row, hit_changed = _short_tx(lambda s: get_cached_preview_batch_item(s, shareurl=url))
         except Exception:
             row, hit_changed = (None, False)
         if row is not None:
@@ -253,7 +271,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
     if not per_drive:
         return SharePreviewBatchOut(items=items), cache_changed
 
-    manager = DatabaseAccountManager(db)
+    manager = DatabaseAccountManager(db, no_login=True)
     invalid_changed = False
 
     def _safe_error(e: Exception) -> str:
@@ -297,7 +315,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
         adapter = manager.manager.get_adapter(name)
         if adapter is None:
             return None
-        if not bool(getattr(adapter, "is_active", False)):
+        if (not bool(getattr(adapter, "is_active", False))) and (not bool(getattr(adapter, "no_login", False))):
             try:
                 ok = adapter.init()
             except Exception:
@@ -329,7 +347,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
                 for account in candidates:
                     adapter = _get_ready_adapter(account)
                     if adapter is None:
-                        last_error = f"账号 {str(getattr(account, 'name', '') or '').strip()}: 登录失败"
+                        last_error = f"账号 {str(getattr(account, 'name', '') or '').strip()}: 不可用"
                         continue
                     try:
                         pwd_id, passcode, extracted_pdir_fid, _ = adapter.extract_url(url)
@@ -380,20 +398,28 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
                 items.append(out)
                 _share_preview_batch_cache_set(shareurl=url, item=out)
                 try:
-                    if upsert_preview_batch_cache(
-                        db,
-                        shareurl=out.shareurl,
-                        drive_type=out.drive_type,
-                        ok=out.ok,
-                        message=out.message,
-                        ttl_seconds=int(getattr(settings, "tasks_share_preview_batch_db_cache_ttl_seconds", 6 * 60 * 60) or 6 * 60 * 60),
+                    if _short_tx(
+                        lambda s: upsert_preview_batch_cache(
+                            s,
+                            shareurl=out.shareurl,
+                            drive_type=out.drive_type,
+                            ok=out.ok,
+                            message=out.message,
+                            ttl_seconds=int(
+                                getattr(settings, "tasks_share_preview_batch_db_cache_ttl_seconds", 6 * 60 * 60) or 6 * 60 * 60
+                            ),
+                        )
                     ):
                         cache_changed = True
                 except Exception:
                     pass
                 if (not out.ok) and _should_persist_invalid_share_link(out.message):
                     try:
-                        if upsert_invalid_share_link(db, shareurl=out.shareurl, drive_type=out.drive_type, message=out.message):
+                        if _short_tx(
+                            lambda s: upsert_invalid_share_link(
+                                s, shareurl=out.shareurl, drive_type=out.drive_type, message=out.message
+                            )
+                        ):
                             invalid_changed = True
                     except Exception:
                         pass
@@ -402,20 +428,28 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
                 items.append(out)
                 _share_preview_batch_cache_set(shareurl=url, item=out)
                 try:
-                    if upsert_preview_batch_cache(
-                        db,
-                        shareurl=out.shareurl,
-                        drive_type=out.drive_type,
-                        ok=out.ok,
-                        message=out.message,
-                        ttl_seconds=int(getattr(settings, "tasks_share_preview_batch_db_cache_ttl_seconds", 6 * 60 * 60) or 6 * 60 * 60),
+                    if _short_tx(
+                        lambda s: upsert_preview_batch_cache(
+                            s,
+                            shareurl=out.shareurl,
+                            drive_type=out.drive_type,
+                            ok=out.ok,
+                            message=out.message,
+                            ttl_seconds=int(
+                                getattr(settings, "tasks_share_preview_batch_db_cache_ttl_seconds", 6 * 60 * 60) or 6 * 60 * 60
+                            ),
+                        )
                     ):
                         cache_changed = True
                 except Exception:
                     pass
                 if _should_persist_invalid_share_link(out.message):
                     try:
-                        if upsert_invalid_share_link(db, shareurl=out.shareurl, drive_type=out.drive_type, message=out.message):
+                        if _short_tx(
+                            lambda s: upsert_invalid_share_link(
+                                s, shareurl=out.shareurl, drive_type=out.drive_type, message=out.message
+                            )
+                        ):
                             invalid_changed = True
                     except Exception:
                         pass

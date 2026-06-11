@@ -26,10 +26,14 @@ export type SyncExecutionItem = {
   run_log?: string | null
   stats: Record<string, any>
   message?: string | null
+  cancel_requested_at?: string | null
+  cancel_requested_by?: number | null
+  cancel_message?: string | null
 }
 
 export type SyncTaskItem = {
   id: number
+  uid: string
   name: string
   enabled: boolean
   source: SyncEndpoint
@@ -37,6 +41,7 @@ export type SyncTaskItem = {
   mode: SyncMode
   strategy: SyncStrategy
   drama_task_uids?: string[]
+  addition?: Record<string, any>
   created_at: string
   updated_at: string
 }

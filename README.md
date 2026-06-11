@@ -114,6 +114,11 @@ services:
 | ---------------- | ---------- | ---------------------------- |
 | `PORT`           | `5115`     | 管理后台端口                       |
 | `DEBUG`          | `0`        | 开启调试模式，打印更多日志信息 |
+| `DRAMA_RUNTIME_RETRY_MAX_ATTEMPTS`        | `0`        | 最大重试次数，默认3次，0表示不重试 |
+| `DRAMA_RUNTIME_RETRY_BACKOFF_SECONDS`        | `1`        | 重试延迟时间，默认1秒 |
+| `DRAMA_RUNTIME_RETRY_MAX_BACKOFF_SECONDS`        | `8`        | 最大重试延迟时间，默认8秒 |
+| `DRAMA_RUNTIME_RETRY_JITTER_RATIO`        | `0.2`        | 重试延迟随机化比例，默认0.2 |
+
 
 
 <details open>
@@ -179,3 +184,11 @@ services:
 CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.
 
 <a href="https://edgeone.ai/?from=github" target="_blank"><img title="Best Asian CDN, Edge, and Secure Solutions - Tencent EdgeOne" src="https://edgeone.ai/media/34fe3a45-492d-4ea4-ae5d-ea1087ca7b4b.png" width="300"></a>
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date" />
+</picture>

@@ -9,6 +9,8 @@ from app.models.openlist_setting import OpenListSetting
 from app.models.permission import Permission
 from app.models.plugin_config import PluginConfig
 from app.models.plugin_definition import PluginDefinition
+from app.models.sync_plugin_config import SyncPluginConfig
+from app.models.sync_plugin_definition import SyncPluginDefinition
 from app.models.refresh_token import RefreshToken
 from app.models.share_preview_batch_cache import SharePreviewBatchCache
 from app.models.role import Role
@@ -23,6 +25,7 @@ from app.models.user import User
 from app.models.resource_search_source import ResourceSearchSource
 from app.models.sync_task import SyncTask
 from app.models.sync_task_drama_link import SyncTaskDramaLink
+from app.models.sync_task_lock import SyncTaskLock
 from app.models.sync_execution import SyncExecution
 from app.models.sync_execution_file import SyncExecutionFile
 from app.models.sync_file_snapshot import SyncFileSnapshot
@@ -54,7 +57,10 @@ __all__ = [
     "user_roles",
     "SyncTask",
     "SyncTaskDramaLink",
+    "SyncTaskLock",
     "SyncExecution",
     "SyncExecutionFile",
     "SyncFileSnapshot",
+    "SyncPluginConfig",
+    "SyncPluginDefinition",
 ]
