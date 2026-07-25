@@ -86,6 +86,7 @@ const showPreviewModal = ref(false)
 const previewPage = ref(1)
 const previewPageSize = 20
 const previewDirStack = ref<{ pdir_fid: string; name: string }[]>([])
+const previewForcedRoot = ref(false)
 const previewTotalPages = computed(() => Math.max(1, Math.ceil(previewItems.value.length / previewPageSize)))
 const previewPageItems = computed(() => {
   const start = (previewPage.value - 1) * previewPageSize
@@ -713,6 +714,7 @@ async function handlePreview() {
   previewItems.value = []
   previewTotal.value = 0
   previewDirStack.value = []
+  previewForcedRoot.value = false
   try {
     const res = await previewShare(buildPreviewParams())
     const items = res.items || []
@@ -743,7 +745,8 @@ async function loadPreviewDir(pdirFid?: string) {
   previewing.value = true
   previewError.value = ''
   try {
-    const res = await previewShare(buildPreviewParams({ pdir_fid: pdirFid || null }))
+    const pdirParam = pdirFid || (previewForcedRoot.value ? '' : null)
+    const res = await previewShare(buildPreviewParams({ pdir_fid: pdirParam }))
     const items = res.items || []
     previewTotal.value = items.length
     previewItems.value = items
@@ -768,6 +771,7 @@ function previewGoBack() {
 
 function previewGoRoot() {
   previewDirStack.value = []
+  previewForcedRoot.value = true
   loadPreviewDir(undefined)
 }
 
@@ -1235,6 +1239,7 @@ function getTmdbPoster(item: TMDBBrief): string {
             <ArrowUp class="h-3.5 w-3.5" /> 返回上级
           </button>
           <span v-if="previewDirStack.length > 0" class="text-xs text-[hsl(var(--muted-foreground))] truncate">/ {{ previewDirStack.map(d => d.name).join(' / ') }}</span>
+          <span v-else-if="previewForcedRoot" class="text-xs text-[hsl(var(--muted-foreground))]">分享根目录</span>
           <span v-else-if="shareurlHasFid" class="text-xs text-[hsl(var(--muted-foreground))]">当前位于指定子目录</span>
           <div class="flex-1" />
           <Button size="sm" variant="default" @click="pickCurrentShareFolder" :disabled="!previewDirStack.length">

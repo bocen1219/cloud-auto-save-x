@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import threading
 import time
 from dataclasses import dataclass
@@ -412,6 +413,12 @@ class Dl302SyncExecutor:
                 execution.status = "failed"
                 execution.message = last_error
 
+            # 无论 done/cancelled/failed，只要有成功复制的文件就刷新对应目录的 lsdir 缓存
+            try:
+                self._trigger_post_sync_lsdir_refresh(target=target, items=final_items, log=log)
+            except Exception as exc:
+                log.line(f"WARN: ls_dir 缓存刷新触发失败 err={str(exc).strip() or type(exc).__name__}")
+
             execution.finished_at = datetime.now()
             execution.stage = log.stage
             execution.stats_json = json.dumps(final_stats, ensure_ascii=False)
@@ -433,6 +440,11 @@ class Dl302SyncExecutor:
             log.set_stage("aborted")
             log.section("已停止")
             log.line(message)
+            # 已复制成功的文件仍需刷新目录缓存（尽力而为）
+            try:
+                self._trigger_post_sync_lsdir_refresh(target=target, items=cached_items, log=log)
+            except Exception:
+                pass
             execution.status = "aborted"
             execution.finished_at = datetime.now()
             execution.stage = log.stage
@@ -447,6 +459,11 @@ class Dl302SyncExecutor:
             log.set_stage("error")
             log.section("异常")
             log.line(message)
+            # 已复制成功的文件仍需刷新目录缓存（尽力而为）
+            try:
+                self._trigger_post_sync_lsdir_refresh(target=target, items=cached_items, log=log)
+            except Exception:
+                pass
             execution.status = "failed"
             execution.finished_at = datetime.now()
             execution.stage = log.stage
@@ -833,6 +850,52 @@ class Dl302SyncExecutor:
             if text:
                 return text
         return f"item-{int(getattr(item, 'id', 0) or 0)}"
+
+    def _trigger_post_sync_lsdir_refresh(self, *, target: Dl302Endpoint, items, log: ExecutionLog) -> None:
+        """同步结束后，对有新增文件的目标目录同步刷新 lsdir 缓存（阻塞直到完成，确保后续任务能识别新文件）。"""
+        if target.type != "netdisk" or not target.account_id:
+            return
+        base = "/" + str(target.path or "").strip().strip("/")
+        prefix = base.rstrip("/") + "/"
+        copied = 0
+        relative_dirs: set[str] = set()
+        for item in items or []:
+            if str(getattr(item, "status", "") or "").strip() != "done":
+                continue
+            copied += 1
+            dst_path = str(getattr(item, "dst_path", "") or "").strip()
+            if not dst_path:
+                continue
+            parent = posixpath.dirname("/" + dst_path.strip("/"))
+            if parent == base:
+                # base 目录本身必扫（savepath 非递归列目录），无需重复登记
+                continue
+            if not parent.startswith(prefix):
+                continue
+            relative = parent[len(prefix):].strip("/")
+            if relative:
+                relative_dirs.add(relative)
+        if copied <= 0:
+            log.line("ls_dir 缓存刷新: 跳过（本次无新增文件）")
+            return
+        try:
+            refresh_drive_account_lsdir_paths(
+                int(target.account_id),
+                savepath=base,
+                relative_dir_paths=sorted(relative_dirs),
+                source="sync_executor.post_sync_refresh",
+                wait_if_busy=True,
+                max_wait_seconds=120.0,
+                include_cas_root_dir=False,
+            )
+            log.line(
+                "ls_dir 缓存刷新: 完成"
+                f" account_id={int(target.account_id)} target={base} copied_files={copied} touched_dirs={len(relative_dirs)}"
+            )
+        except Exception as exc:
+            log.line(
+                f"ls_dir 缓存刷新: 失败（不影响同步结果） err={exc}"
+            )
 
     def _run_sync_plugins(
         self,

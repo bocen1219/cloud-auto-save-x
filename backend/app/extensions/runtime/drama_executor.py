@@ -23,6 +23,43 @@ from app.extensions.runtime.retry_utils import RetryResult, retry_call, summariz
 logger = logging.getLogger(__name__)
 
 
+_VIDEO_EXTS = {
+    ".3g2",
+    ".3gp",
+    ".asf",
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".divx",
+    ".f4v",
+    ".flv",
+    ".m4v",
+    ".m2t",
+    ".m2ts",
+    ".mk3d",
+    ".mov",
+    ".mp2ts",
+    ".mpeg",
+    ".mpg",
+    ".mts",
+    ".ogm",
+    ".ogv",
+    ".qt",
+    ".rm",
+    ".rmvb",
+    ".tp",
+    ".trp",
+    ".ts",
+    ".vob",
+    ".webm",
+    ".wmv",
+    ".xvid",
+    ".iso",
+    ".cas",
+    ".zip",
+}
+
+
 
 class SkipTask(Exception):
     pass
@@ -72,6 +109,14 @@ def _normalize_name(name: str, ignore_extension: bool) -> str:
 def _has_file_extension(name: str) -> bool:
     _base, ext = os.path.splitext(str(name or "").strip())
     return len(str(ext or "")) > 1
+
+
+def _is_video_name(name: str) -> bool:
+    try:
+        _base, ext = os.path.splitext(str(name or "").strip())
+    except Exception:
+        return False
+    return bool(ext) and ext.lower() in _VIDEO_EXTS
 
 
 def _is_dir(payload: dict[str, Any]) -> bool:
@@ -777,6 +822,9 @@ class DramaTaskExecutor:
                 if filter_only_mode:
                     file_name_re = origin_name
                 elif (not disable_guessit_fallback) and (not pattern.strip()) and (not replace.strip()) and bool(tmdb_series_title):
+                    if not _is_video_name(origin_name):
+                        self._line(f"跳过: guessit 兜底仅处理视频文件 {origin_name}")
+                        continue
                     try:
                         from app.extensions.runtime.guessit_fallback import guessit_media_target
 

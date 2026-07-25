@@ -13,7 +13,6 @@ from app.extensions.runtime.execution_log import ExecutionLog
 from app.models.sync_execution import SyncExecution
 from app.models.sync_task import SyncTask
 from app.models.sync_task_drama_link import SyncTaskDramaLink
-from app.services.drive_account_lsdir_scan import refresh_drive_account_lsdir_paths
 
 
 logger = logging.getLogger(__name__)
@@ -193,15 +192,6 @@ def run_linked_sync_tasks_blocking(
                     "force_refresh_suppressed": force_refresh_suppressed,
                 }
             )
-            # Post-sync: targeted lsdir refresh of the sync task's target directory
-            if status == "success" and target_type == "netdisk" and target_account_id and target_path:
-                _post_sync_refresh_target_lsdir(
-                    account_id=int(target_account_id),
-                    target_path=target_path,
-                    sync_task_name=sync_task_name,
-                    source=source,
-                    log=log,
-                )
         except Exception as exc:
             message = str(getattr(exc, "message", None) or str(exc) or type(exc).__name__).strip()
             log.line(f"失败: {sync_task_name} err={message}")
@@ -234,44 +224,6 @@ def _normalize_task_uids(values: list[str] | None) -> list[str]:
         seen.add(uid)
         out.append(uid)
     return out
-
-
-def _post_sync_refresh_target_lsdir(
-    *,
-    account_id: int,
-    target_path: str,
-    sync_task_name: str,
-    source: str,
-    log: ExecutionLog | None = None,
-) -> None:
-    """After a sync task completes successfully, refresh its target directory lsdir cache."""
-    if not target_path or account_id <= 0:
-        return
-    try:
-        stats = refresh_drive_account_lsdir_paths(
-            account_id=int(account_id),
-            savepath=str(target_path),
-            relative_dir_paths=None,
-            recursive_savepath=False,
-            source=f"{source}.post_sync_refresh",
-            wait_if_busy=True,
-            max_wait_seconds=600.0,
-            include_cas_root_dir=False,
-        )
-        if log:
-            log.line(
-                f"后置刷新: {sync_task_name} account_id={account_id} target={target_path} "
-                f"scanned_dirs={int(getattr(stats, 'scanned_dirs', 0) or 0)} "
-                f"cached_items={int(getattr(stats, 'cached_items', 0) or 0)}"
-            )
-    except Exception as exc:
-        msg = str(getattr(exc, "message", None) or str(exc) or type(exc).__name__).strip()
-        if log:
-            log.line(f"后置刷新失败: {sync_task_name} account_id={account_id} target={target_path} err={msg}")
-        logger.warning(
-            "同步任务后置lsdir刷新失败 sync_task=%s account_id=%s target=%s err=%s",
-            sync_task_name, account_id, target_path, msg,
-        )
 
 
 def _run_linked_sync_tasks(task_uids: list[str], source: str) -> None:

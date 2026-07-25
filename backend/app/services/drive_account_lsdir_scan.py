@@ -485,6 +485,52 @@ def refresh_drive_account_lsdir_paths(
         )
 
 
+def trigger_drive_account_lsdir_refresh_async(
+    account_id: int,
+    *,
+    savepath: str,
+    relative_dir_paths: list[str] | None,
+    source: str,
+    recursive_savepath: bool = False,
+    max_wait_seconds: float = 600.0,
+) -> None:
+    """后台线程执行定向 lsdir 刷新；账号已有扫描在跑时等待其结束再刷，保证刷新不丢失。
+
+    与 trigger_drive_account_lsdir_targeted_scan 的区别：后者遇到互斥直接放弃（skip-if-busy），
+    本函数用于「同步任务结束后刷新新增文件目录」这类不允许丢失的场景（wait-if-busy）。
+    """
+    account_key = int(account_id)
+    normalized_savepath = _normalize_parent_path(savepath)
+    relative_dirs = [str(item or "") for item in (relative_dir_paths or [])]
+
+    def _worker() -> None:
+        try:
+            refresh_drive_account_lsdir_paths(
+                account_key,
+                savepath=normalized_savepath,
+                relative_dir_paths=relative_dirs,
+                source=str(source or ""),
+                recursive_savepath=bool(recursive_savepath),
+                wait_if_busy=True,
+                max_wait_seconds=float(max_wait_seconds),
+                include_cas_root_dir=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "drive account lsdir async refresh failed account_id=%s source=%s savepath=%s err=%s",
+                account_key,
+                source,
+                normalized_savepath,
+                str(exc).strip() or type(exc).__name__,
+            )
+
+    threading.Thread(
+        target=_worker,
+        name=f"drive-account-lsdir-async-refresh-{account_key}",
+        daemon=True,
+    ).start()
+
+
 def recover_incomplete_drive_account_static_scans(source: str = "startup.recover_static_lsdir") -> dict[str, int]:
     with SessionLocal() as db:
         accounts = (
