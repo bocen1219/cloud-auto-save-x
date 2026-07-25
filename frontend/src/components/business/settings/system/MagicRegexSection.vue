@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ToggleSwitch } from '@/components/ui/toggle-switch'
-import { Plus, Pencil, Trash2, TestTube2, Loader2, RefreshCw } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, TestTube2, Loader2, RefreshCw, BookOpen } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useMagicRegexRulesQuery } from '@/hooks/queries/settings'
 import { useUpsertMagicRegexRuleMutation, useDeleteMagicRegexRuleMutation } from '@/hooks/mutations/settings'
@@ -84,6 +84,16 @@ function testRegex() {
         <h2 class="text-base font-semibold text-[hsl(var(--foreground))]">✨ 重命名规则</h2>
         <p class="mt-0.5 text-xs text-[hsl(var(--muted-foreground))]">
           规则 key 需以 <code class="rounded bg-[hsl(var(--muted))] px-1">$</code> 开头，在追剧任务中将 pattern 设为该 key 即可使用。
+          <a
+            href="/docs#regex"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="查看正则使用说明（新页面打开）"
+            class="inline-flex items-center gap-0.5 text-[hsl(var(--primary))] hover:underline"
+          >
+            <BookOpen class="h-3 w-3" />
+            正则使用说明
+          </a>
         </p>
       </div>
       <div class="flex gap-2">

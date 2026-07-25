@@ -13,6 +13,7 @@ _RE_CJK = re.compile(r"[\u4e00-\u9fff]+")
 _RE_SPECIAL = re.compile(r"[\|\%\$]+")
 _RE_INVALID_FS = re.compile(r'[\\/:*?"<>|]+')
 _RE_SPACES = re.compile(r"\s+")
+_RE_EPISODE_VERSION_MARKER = r"(?:\(\s*v\d+\s*\)|v\d+)"
 
 _TRACE = os.getenv("DEBUG", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -171,7 +172,11 @@ def _pick_leading_episode(base: str) -> int | None:
     s = sanitize_for_guessit(base)
     if not s:
         return None
-    m = re.match(r"^\s*(\d{1,4})\s*(?:[-._\s]+|$)", s)
+    m = re.match(
+        rf"^\s*(\d{{1,4}})(?:\s*{_RE_EPISODE_VERSION_MARKER})?\s*(?:[-._\s]+|$)",
+        s,
+        re.IGNORECASE,
+    )
     if not m:
         return None
     try:
@@ -184,8 +189,8 @@ def _pick_leading_episode(base: str) -> int | None:
 
 
 _DEFAULT_STRICT_KNOWN_EP_PATTERNS = [
-    r"^\s*(\d{1,4})\s*[\s._\-\\/／~]+\s*(?:4k|8k|2160p|1080p|720p)(?:[\s._\-\\/／].*)?$",
-    r"^\s*(\d{1,4})\s*$",
+    rf"^\s*(\d{{1,4}})(?:\s*{_RE_EPISODE_VERSION_MARKER})?\s*[\s._\-\\/／~]+\s*(?:4k|8k|2160p|1080p|720p)(?:[\s._\-\\/／].*)?$",
+    rf"^\s*(\d{{1,4}})(?:\s*{_RE_EPISODE_VERSION_MARKER})?\s*$",
 ]
 
 

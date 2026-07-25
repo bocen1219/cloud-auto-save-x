@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   X, Eye, Loader2, ChevronDown, ChevronUp, Folder, FolderOpen, Search,
-  Play, ArrowUp, ArrowDown, FileText, ChevronLeft, ChevronRight, RefreshCw, GripVertical,
+  Play, ArrowUp, ArrowDown, FileText, ChevronLeft, ChevronRight, RefreshCw, GripVertical, BookOpen,
 } from 'lucide-vue-next'
 import { previewShare, previewShareBatch, browseDrive, fetchTasks } from '@/api/tasks'
 import { fetchTaskSuggestions } from '@/api/resourceSearch'
@@ -120,6 +120,7 @@ const submitting = ref(false)
 const previewHint = ref('')
 const autoPreviewTimer = ref<any>(null)
 const autoLocateRunId = ref(0)
+const skipNextShareurlAutoLocate = ref(false)
 const savepathTouched = ref(false)
 const savepathLastApplied = ref('')
 const tmdbDetailCache = ref<Record<string, any>>({})
@@ -601,6 +602,10 @@ watch(() => state.shareurl, (newUrl, oldUrl) => {
     return
   }
   if (newUrl === oldUrl) return
+  if (skipNextShareurlAutoLocate.value) {
+    skipNextShareurlAutoLocate.value = false
+    return
+  }
 
   autoPreviewTimer.value = setTimeout(async () => {
     autoLocateRunId.value += 1
@@ -779,15 +784,21 @@ function pickCurrentShareFolder() {
     state.startfid = ''
     // Build a new shareurl with pdir_fid appended
     const baseUrl = state.shareurl.trim()
+    let nextShareurl = baseUrl
     try {
       const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https://x.com/${baseUrl}`)
       url.searchParams.set('fid', current.pdir_fid)
-      state.shareurl = baseUrl.startsWith('http') ? url.toString() : `${url.pathname.slice(1)}${url.search}`
+      nextShareurl = baseUrl.startsWith('http') ? url.toString() : `${url.pathname.slice(1)}${url.search}`
     } catch {
       // Fallback: just append ?fid=...
       const sep = baseUrl.includes('?') ? '&' : '?'
-      state.shareurl = `${baseUrl}${sep}fid=${current.pdir_fid}`
+      nextShareurl = `${baseUrl}${sep}fid=${current.pdir_fid}`
     }
+    if (nextShareurl !== baseUrl) {
+      skipNextShareurlAutoLocate.value = true
+      state.shareurl = nextShareurl
+    }
+    previewHint.value = `已使用当前文件夹: ${current.name}`
     toast.success(`已选择当前目录: ${current.name}`)
     showPreviewModal.value = false
   }
@@ -1613,8 +1624,18 @@ function getTmdbPoster(item: TMDBBrief): string {
 
             <!-- ===== 重命名规则 ===== -->
             <section class="space-y-4">
-              <h3 class="text-sm font-semibold text-[hsl(var(--foreground))] border-b border-[hsl(var(--border))] pb-2">
-                重命名规则（可选）
+              <h3 class="flex items-center justify-between text-sm font-semibold text-[hsl(var(--foreground))] border-b border-[hsl(var(--border))] pb-2">
+                <span>重命名规则（可选）</span>
+                <a
+                  href="/docs#regex"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="查看正则使用说明（新页面打开）"
+                  class="inline-flex items-center gap-1 text-xs font-normal text-[hsl(var(--primary))] hover:underline"
+                >
+                  <BookOpen class="h-3.5 w-3.5" />
+                  使用说明
+                </a>
               </h3>
               <!-- 内置规则选择 -->
               <div>
@@ -1631,11 +1652,11 @@ function getTmdbPoster(item: TMDBBrief): string {
               </div>
               <div>
                 <label class="mb-1.5 block text-xs font-medium text-[hsl(var(--muted-foreground))]">匹配正则 (pattern)</label>
-                <Input v-model="state.pattern" placeholder="如 (.*)" />
+                <Input v-model="state.pattern" placeholder="如 .*\.(mp4|mkv)$，或内置规则 key 如 $TV_REGEX" />
               </div>
               <div>
                 <label class="mb-1.5 block text-xs font-medium text-[hsl(var(--muted-foreground))]">替换字符串 (replace)</label>
-                <Input v-model="state.replace" placeholder="如 $1" />
+                <Input v-model="state.replace" placeholder="如 {TASKNAME}.{SXX}E{E}.{EXT}，留空则仅筛选不改名" />
               </div>
               <label class="flex items-center gap-2 text-sm text-[hsl(var(--foreground))] cursor-pointer">
                 <input v-model="state.ignore_extension" type="checkbox" class="h-4 w-4 rounded border-[hsl(var(--border))] text-[hsl(var(--primary))]" />

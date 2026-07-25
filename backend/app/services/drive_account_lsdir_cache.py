@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import posixpath
 from typing import Any
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.drive_account_lsdir_cache import DriveAccountLsdirCache
@@ -316,6 +316,34 @@ def _list_drive_account_lsdir_direct_children_by_path(
     return result
 
 
+def _list_drive_account_lsdir_rows_for_upsert(
+    db: Session,
+    *,
+    account_id: int,
+    full_paths: list[str] | None,
+    fids: list[str] | None,
+) -> list[DriveAccountLsdirCache]:
+    path_values = [str(item or "").strip() for item in (full_paths or []) if str(item or "").strip()]
+    fid_values = [str(item or "").strip() for item in (fids or []) if str(item or "").strip()]
+    matchers = []
+    if path_values:
+        matchers.append(DriveAccountLsdirCache.full_path.in_(path_values))
+    if fid_values:
+        matchers.append(DriveAccountLsdirCache.fid.in_(fid_values))
+    if not matchers:
+        return []
+    return (
+        db.execute(
+            select(DriveAccountLsdirCache).where(
+                DriveAccountLsdirCache.account_id == int(account_id),
+                or_(*matchers),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 def upsert_drive_account_lsdir_items(
     db: Session,
     *,
@@ -332,20 +360,17 @@ def upsert_drive_account_lsdir_items(
         deduped_items[str(item["full_path"])] = item
     normalized_items = list(deduped_items.values())
     current_paths = [item["full_path"] for item in normalized_items]
+    current_fids = [str(item["fid"]) for item in normalized_items if str(item.get("fid") or "").strip()]
     current_paths_by_fid = {str(item["fid"]): str(item["full_path"]) for item in normalized_items if str(item.get("fid") or "").strip()}
 
-    existing_children = (
-        db.execute(
-            select(DriveAccountLsdirCache).where(
-                DriveAccountLsdirCache.account_id == int(account_id),
-                DriveAccountLsdirCache.parent_fid == str(parent_fid or ""),
-            )
-        )
-        .scalars()
-        .all()
+    existing_candidates = _list_drive_account_lsdir_rows_for_upsert(
+        db,
+        account_id=int(account_id),
+        full_paths=current_paths,
+        fids=current_fids,
     )
-    existing_map = {str(row.full_path): row for row in existing_children}
-    existing_by_fid = {str(row.fid): row for row in existing_children if str(getattr(row, "fid", "") or "").strip()}
+    existing_map = {str(row.full_path): row for row in existing_candidates}
+    existing_by_fid = {str(row.fid): row for row in existing_candidates if str(getattr(row, "fid", "") or "").strip()}
     renamed_directory_paths: set[str] = set()
 
     for item in normalized_items:

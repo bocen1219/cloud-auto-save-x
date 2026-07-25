@@ -22,6 +22,7 @@ import type { SyncTaskItem } from '@/types/syncTasks'
 import SyncTaskCard from '@/components/business/sync/SyncTaskCard.vue'
 import CreateSyncSheet from '@/components/business/sync/CreateSyncSheet.vue'
 import SyncLogDialog from '@/components/business/sync/SyncLogDialog.vue'
+import { extractErrorMessage } from '@/lib/driveAuth'
 
 const { toast } = useToast()
 const { data: tasks, isLoading, refetch: refetchTasks } = useSyncTasksQuery()
@@ -116,7 +117,7 @@ function handleStop(task: SyncTaskItem) {
             runningTaskIds.value.delete(task.id)
           },
           onError: (err: any) => {
-            toast.error('停止失败', { description: err?.message || '' })
+            toast.error('停止失败', { description: extractErrorMessage(err, '停止失败') })
           },
         },
       )
@@ -157,7 +158,7 @@ function handleDeleteConfirm() {
       if (selectedTaskId.value === task.id) selectedTaskId.value = null
     },
     onError: (err: any) => {
-      toast.error('删除失败', { description: err?.message || '' })
+      toast.error('删除失败', { description: extractErrorMessage(err, '删除失败') })
     },
   })
   deleteDialogOpen.value = false

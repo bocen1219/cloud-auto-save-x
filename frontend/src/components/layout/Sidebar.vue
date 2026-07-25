@@ -16,6 +16,7 @@ import {
   Moon,
   ArrowUpCircle,
   HelpCircle,
+  BookOpen,
 } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
 import { useOnboarding } from '@/composables/useOnboarding'
@@ -118,6 +119,7 @@ const navItems = computed(() => {
     { path: '/drives', label: '网盘账号', icon: HardDrive, permission: DRIVE_ACCOUNT_READ, tour: 'nav-drives' },
     { path: '/dl302', label: '302 代理', icon: Globe, permission: null, tour: 'nav-dl302' },
     { path: '/settings', label: '设置', icon: Settings, permission: null, tour: 'nav-settings' },
+    { path: '/docs', label: '说明文档', icon: BookOpen, permission: null, tour: 'nav-docs' },
     { path: '/users', label: '用户', icon: Users, permission: USER_READ, tour: 'nav-users' },
   ]
 

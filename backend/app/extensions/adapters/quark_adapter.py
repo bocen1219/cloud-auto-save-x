@@ -782,6 +782,24 @@ class QuarkAdapter(BaseCloudDriveAdapter):
         # passcode
         match_pwd = re.search(r"pwd=(\w+)", url)
         passcode = match_pwd.group(1) if match_pwd else ""
+
+        pdir_fid: Any = 0
+
+        # 优先解析 query 中的 fid，和前端/Telegram 侧保持一致
+        match_query_fid = re.search(r"(?:\?|&)fid=([^&#]+)", url)
+        if match_query_fid:
+            query_fid = urllib.parse.unquote(str(match_query_fid.group(1) or "").strip())
+            if query_fid and query_fid not in ("0", "root"):
+                pdir_fid = query_fid
+
+        # 其次解析 hash 路径中的子目录 fid
+        if pdir_fid in (0, "0", "", None):
+            match_hash_fid = re.search(r"#/list/share/([a-zA-Z0-9]{6,64})", url)
+            if match_hash_fid:
+                hash_fid = str(match_hash_fid.group(1) or "").strip()
+                if hash_fid:
+                    pdir_fid = hash_fid
+
         # path: fid-name
         paths = []
         matches = re.findall(r"/(\w{32})-?([^/]+)?", url)
@@ -789,7 +807,8 @@ class QuarkAdapter(BaseCloudDriveAdapter):
             fid = match[0]
             name = urllib.parse.unquote(match[1]).replace("*101", "-")
             paths.append({"fid": fid, "name": name})
-        pdir_fid = paths[-1]["fid"] if matches else 0
+        if pdir_fid in (0, "0", "", None) and matches:
+            pdir_fid = paths[-1]["fid"]
         return pwd_id, passcode, pdir_fid, paths
 
     # 以下为夸克特有方法，不在基类接口中

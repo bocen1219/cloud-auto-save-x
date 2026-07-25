@@ -14,7 +14,8 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog'
 import {
-  Plus, Search, Film, Play, Wrench, Square, Camera, ChevronDown, ChevronUp,
+  Plus, Search, Film, Play, Wrench, Square, Camera,
+  HardDrive, User, HelpCircle, X, CalendarCheck, Save,
 } from 'lucide-vue-next'
 import TaskCard from '@/components/business/drama/TaskCard.vue'
 import DramaTaskLauncher from '@/components/business/drama/DramaTaskLauncher.vue'
@@ -31,22 +32,25 @@ import {
 import { useToast } from '@/composables/useToast'
 import { useDramaTaskLauncher } from '@/composables/useDramaTaskLauncher'
 import type { TaskItem } from '@/types/tasks'
+import { useDriveAccountsQuery } from '@/hooks/queries/extensions'
+import { getDriveTypeLabel } from '@/utils/driveType'
+import { resolveTaskAccount, type ResolvedTaskAccount } from '@/utils/taskAccount'
 
 const { toast } = useToast()
 const launcher = useDramaTaskLauncher()
 
 const searchQuery = ref('')
+const selectedDriveType = ref('')
+const selectedAccountName = ref('')
 
 // Delete confirm state
 const deleteDialogOpen = ref(false)
 const taskToDelete = ref<TaskItem | null>(null)
 
-// Scheduler panel collapsed state
-const schedulerExpanded = ref(false)
-
 // Queries
 const { data: tasks, isLoading } = useTasksQuery()
 const { data: schedulerData } = useTaskSchedulerSettingQuery()
+const { data: driveAccounts } = useDriveAccountsQuery()
 
 // Mutations
 const deleteMutation = useDeleteTaskMutation()
@@ -88,19 +92,99 @@ function getTaskCategory(t: TaskItem): TaskCategory {
 const CATEGORY_ORDER: Record<TaskCategory, number> = { active: 0, ended: 1, disabled: 2 }
 const CATEGORY_LABELS: Record<TaskCategory, string> = { active: '进行中', ended: '已完结', disabled: '已禁用' }
 
+const taskAccountMap = computed(() => {
+  const map = new Map<number, ResolvedTaskAccount>()
+  for (const task of tasks.value || []) {
+    map.set(task.id, resolveTaskAccount(task, driveAccounts.value))
+  }
+  return map
+})
+
+function getTaskAccount(task: TaskItem): ResolvedTaskAccount {
+  return taskAccountMap.value.get(task.id) || resolveTaskAccount(task, driveAccounts.value)
+}
+
+const UNASSIGNED_ACCOUNT = '__NONE__'
+
+const driveTypeOptions = computed(() => {
+  const counts = new Map<string, number>()
+  for (const task of tasks.value || []) {
+    const { driveType } = getTaskAccount(task)
+    if (!driveType) continue
+    counts.set(driveType, (counts.get(driveType) || 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => getDriveTypeLabel(a[0]).localeCompare(getDriveTypeLabel(b[0]), 'zh-CN'))
+    .map(([code, count]) => ({ code, count }))
+})
+
+const accountOptions = computed(() => {
+  const counts = new Map<string, { count: number; driveType: string }>()
+  let unassigned = 0
+  for (const task of tasks.value || []) {
+    const resolved = getTaskAccount(task)
+    if (selectedDriveType.value && resolved.driveType !== selectedDriveType.value) continue
+    if (!resolved.accountName) {
+      unassigned += 1
+      continue
+    }
+    const entry = counts.get(resolved.accountName) || { count: 0, driveType: resolved.driveType }
+    entry.count += 1
+    counts.set(resolved.accountName, entry)
+  }
+  const options = Array.from(counts.entries())
+    .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+    .map(([name, meta]) => ({
+      value: name,
+      label: selectedDriveType.value || !meta.driveType ? name : `${name}（${getDriveTypeLabel(meta.driveType)}）`,
+      count: meta.count,
+    }))
+  if (unassigned > 0) {
+    options.push({ value: UNASSIGNED_ACCOUNT, label: '未识别账号', count: unassigned })
+  }
+  return options
+})
+
+watch(accountOptions, (options) => {
+  if (!selectedAccountName.value) return
+  if (!options.some((opt) => opt.value === selectedAccountName.value)) {
+    selectedAccountName.value = ''
+  }
+})
+
+const hasActiveFilters = computed(() => Boolean(searchQuery.value.trim() || selectedDriveType.value || selectedAccountName.value))
+
 const filteredTasks = computed(() => {
   const list = tasks.value || []
   const q = searchQuery.value.trim().toLowerCase()
-  const filtered = q
-    ? list.filter(
-        (t) =>
-          t.taskname.toLowerCase().includes(q) ||
-          t.shareurl.toLowerCase().includes(q) ||
-          t.savepath.toLowerCase().includes(q),
-      )
-    : [...list]
+  const filtered = list.filter((t) => {
+    const matchesKeyword = !q || t.taskname.toLowerCase().includes(q) || t.shareurl.toLowerCase().includes(q) || t.savepath.toLowerCase().includes(q)
+    const resolved = getTaskAccount(t)
+    const matchesDriveType = !selectedDriveType.value || resolved.driveType === selectedDriveType.value
+    const matchesAccount = !selectedAccountName.value
+      || (selectedAccountName.value === UNASSIGNED_ACCOUNT ? !resolved.accountName : resolved.accountName === selectedAccountName.value)
+    return matchesKeyword && matchesDriveType && matchesAccount
+  })
   return filtered.sort((a, b) => CATEGORY_ORDER[getTaskCategory(a)] - CATEGORY_ORDER[getTaskCategory(b)])
 })
+
+function clearFilters() {
+  searchQuery.value = ''
+  selectedDriveType.value = ''
+  selectedAccountName.value = ''
+}
+
+function filterPillClass(active: boolean) {
+  return active
+    ? 'border-transparent bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-sm'
+    : 'border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))] hover:border-[hsl(var(--primary))]/50 hover:text-[hsl(var(--foreground))]'
+}
+
+function filterCountClass(active: boolean) {
+  return active
+    ? 'bg-[hsl(var(--primary-foreground))]/25'
+    : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'
+}
 
 // Grouped tasks with category headers for display
 const groupedTasks = computed(() => {
@@ -280,47 +364,144 @@ function handleToggleStatus(task: TaskItem) {
       </div>
 
       <!-- Global Scheduler Config -->
-      <div class="mb-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.3)] p-3">
-        <button
-          class="flex w-full items-center justify-between text-sm font-medium text-[hsl(var(--foreground))]"
-          @click="schedulerExpanded = !schedulerExpanded"
-        >
-          <span>全局调度配置</span>
-          <component :is="schedulerExpanded ? ChevronUp : ChevronDown" class="h-4 w-4" />
-        </button>
-        <div v-if="schedulerExpanded" class="mt-3 flex flex-wrap items-center gap-4">
-          <label class="flex items-center gap-2 text-sm text-[hsl(var(--foreground))]">
-            <input
-              type="checkbox"
-              v-model="schedulerForm.enabled"
-              class="h-4 w-4 rounded border-[hsl(var(--border))]"
-            />
-            启用
+      <div class="mb-4 rounded-lg border border-[hsl(var(--border))] p-4">
+        <div class="mb-3 flex items-center gap-2">
+          <CalendarCheck class="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+          <h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">全局调度配置</h3>
+        </div>
+        <div v-if="!schedulerData" class="flex flex-wrap gap-3">
+          <Skeleton class="h-9 w-40 rounded-md" />
+          <Skeleton class="h-9 w-40 rounded-md" />
+        </div>
+        <div v-else class="flex flex-wrap items-center gap-4">
+          <label class="flex cursor-pointer items-center gap-2 text-sm text-[hsl(var(--foreground))]">
+            <button
+              class="relative h-5 w-9 rounded-full transition-colors"
+              :class="schedulerForm.enabled ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted))]'"
+              @click="schedulerForm.enabled = !schedulerForm.enabled"
+            >
+              <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform" :class="schedulerForm.enabled ? 'left-[18px]' : 'left-0.5'" />
+            </button>
+            启用调度
           </label>
           <div class="flex items-center gap-2">
-            <label class="text-sm text-[hsl(var(--muted-foreground))]">Crontab</label>
-            <Input v-model="schedulerForm.crontab" placeholder="0 */6 * * *" class="w-40 h-8 text-sm" />
+            <span class="flex items-center gap-1 text-sm text-[hsl(var(--muted-foreground))]">
+              Crontab
+              <a
+                href="http://tool.lu/crontab"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="crontab 表达式在线工具（新页面打开）"
+                class="transition-colors hover:text-[hsl(var(--primary))]"
+              >
+                <HelpCircle class="h-3.5 w-3.5" />
+              </a>
+            </span>
+            <Input v-model="schedulerForm.crontab" placeholder="0 */6 * * *" class="w-40" />
           </div>
           <div class="flex items-center gap-2">
-            <label class="text-sm text-[hsl(var(--muted-foreground))]">时区</label>
-            <Input v-model="schedulerForm.timezone" placeholder="Asia/Shanghai" class="w-36 h-8 text-sm" />
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">时区</span>
+            <Input v-model="schedulerForm.timezone" placeholder="Asia/Shanghai" class="w-40" />
           </div>
-          <Button size="sm" @click="saveScheduler" :disabled="schedulerMutation.isPending.value">
-            保存
+          <Button size="sm" :disabled="schedulerMutation.isPending.value" @click="saveScheduler">
+            <Save class="mr-1 h-4 w-4" />
+            {{ schedulerMutation.isPending.value ? '保存中...' : '保存' }}
           </Button>
         </div>
       </div>
 
       <!-- Toolbar: search + new task -->
-      <div class="mb-4 flex items-center gap-3">
+      <div class="mb-4 flex flex-wrap items-center gap-3">
         <div class="relative flex-1 max-w-sm">
           <Search class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
           <Input v-model="searchQuery" placeholder="搜索任务..." class="pl-9" />
         </div>
+        <Button v-if="hasActiveFilters" size="sm" variant="outline" @click="clearFilters">
+          清空筛选
+        </Button>
         <Button size="sm" @click="launcher.openCreate()">
           <Plus class="mr-1 h-4 w-4" />
           新建任务
         </Button>
+      </div>
+
+      <!-- Global filters -->
+      <div class="mb-5 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 shadow-sm">
+        <!-- 网盘类型 -->
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1.5 flex w-14 flex-shrink-0 items-center gap-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+            <HardDrive class="h-3.5 w-3.5" />
+            网盘
+          </span>
+          <button
+            class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            :class="filterPillClass(!selectedDriveType)"
+            @click="selectedDriveType = ''"
+          >
+            全部
+          </button>
+          <button
+            v-for="option in driveTypeOptions"
+            :key="option.code"
+            class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            :class="filterPillClass(selectedDriveType === option.code)"
+            @click="selectedDriveType = selectedDriveType === option.code ? '' : option.code"
+          >
+            {{ getDriveTypeLabel(option.code) }}
+            <span
+              class="inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] leading-4"
+              :class="filterCountClass(selectedDriveType === option.code)"
+            >
+              {{ option.count }}
+            </span>
+          </button>
+        </div>
+
+        <div class="my-2.5 h-px bg-[hsl(var(--border))]/70" />
+
+        <!-- 网盘账号 -->
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1.5 flex w-14 flex-shrink-0 items-center gap-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+            <User class="h-3.5 w-3.5" />
+            账号
+          </span>
+          <button
+            class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            :class="filterPillClass(!selectedAccountName)"
+            @click="selectedAccountName = ''"
+          >
+            全部
+          </button>
+          <button
+            v-for="account in accountOptions"
+            :key="account.value"
+            class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            :class="filterPillClass(selectedAccountName === account.value)"
+            @click="selectedAccountName = selectedAccountName === account.value ? '' : account.value"
+          >
+            {{ account.label }}
+            <span
+              class="inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] leading-4"
+              :class="filterCountClass(selectedAccountName === account.value)"
+            >
+              {{ account.count }}
+            </span>
+          </button>
+        </div>
+
+        <!-- 已选条件摘要 + 快速清空 -->
+        <div v-if="selectedDriveType || selectedAccountName" class="mt-2.5 flex items-center gap-2 border-t border-[hsl(var(--border))]/70 pt-2.5 text-xs text-[hsl(var(--muted-foreground))]">
+          <span>
+            已筛选：{{ [selectedDriveType ? getDriveTypeLabel(selectedDriveType) : '', selectedAccountName === UNASSIGNED_ACCOUNT ? '未识别账号' : selectedAccountName].filter(Boolean).join(' / ') }}
+          </span>
+          <button
+            class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 transition-colors hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]"
+            @click="selectedDriveType = ''; selectedAccountName = ''"
+          >
+            <X class="h-3 w-3" />
+            清除
+          </button>
+        </div>
       </div>
 
       <!-- Batch action bar -->
@@ -362,10 +543,10 @@ function handleToggleStatus(task: TaskItem) {
 
       <!-- No results -->
       <div
-        v-else-if="filteredTasks.length === 0 && searchQuery"
+        v-else-if="filteredTasks.length === 0 && hasActiveFilters"
         class="flex flex-col items-center justify-center py-20"
       >
-        <p class="text-sm text-[hsl(var(--muted-foreground))]">未找到匹配「{{ searchQuery }}」的任务</p>
+        <p class="text-sm text-[hsl(var(--muted-foreground))]">当前筛选条件下没有匹配的任务</p>
       </div>
 
       <!-- Task grid grouped by category -->
@@ -388,6 +569,7 @@ function handleToggleStatus(task: TaskItem) {
               v-for="task in group.tasks"
               :key="task.id"
               :task="task"
+              :account="getTaskAccount(task)"
               @run="handleRun"
               @run-once="handleRunOnceTask"
               @edit="handleEdit"

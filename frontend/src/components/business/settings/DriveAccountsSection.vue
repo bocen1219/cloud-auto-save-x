@@ -31,6 +31,7 @@ import {
   Database,
   Save,
   AlertTriangle,
+  HelpCircle,
 } from 'lucide-vue-next'
 import { useDriveAccountsQuery, useDriveTypesQuery, useDriveAccountProbeSchedulerQuery } from '@/hooks/queries/extensions'
 import {
@@ -583,7 +584,18 @@ async function saveScheduler() {
           启用调度
         </label>
         <div class="flex items-center gap-2">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">Crontab</span>
+          <span class="flex items-center gap-1 text-sm text-[hsl(var(--muted-foreground))]">
+            Crontab
+            <a
+              href="http://tool.lu/crontab"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="crontab 表达式在线工具（新页面打开）"
+              class="transition-colors hover:text-[hsl(var(--primary))]"
+            >
+              <HelpCircle class="h-3.5 w-3.5" />
+            </a>
+          </span>
           <Input v-model="schedulerForm.crontab" placeholder="0 4 * * *" class="w-40" />
         </div>
         <div class="flex items-center gap-2">

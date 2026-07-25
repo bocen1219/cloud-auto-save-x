@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+import threading
 from typing import Any, Literal
 
 from sqlalchemy import and_, delete, exists, func, or_, select, update
@@ -19,7 +20,12 @@ from app.thirdparty.tmdb_client import TMDBClient
 MediaType = Literal["movie", "tv"]
 
 _executor = ThreadPoolExecutor(max_workers=4)
+_touch_executor = ThreadPoolExecutor(max_workers=1)
 _lock_timeout = timedelta(minutes=10)
+_touch_min_interval = timedelta(minutes=10)
+_touch_state_lock = threading.Lock()
+_touch_inflight_row_ids: set[int] = set()
+_touch_latest_requested_at: dict[int, datetime] = {}
 
 
 def _now() -> datetime:
@@ -48,6 +54,40 @@ def _touch_last_accessed_at_best_effort(*, row_id: int, accessed_at: datetime) -
             return
         except Exception:
             return
+
+
+def _schedule_last_accessed_at_touch(*, row_id: int, accessed_at: datetime) -> None:
+    if row_id <= 0:
+        return
+    should_submit = False
+    with _touch_state_lock:
+        existing = _touch_latest_requested_at.get(int(row_id))
+        if existing is None or accessed_at > existing:
+            _touch_latest_requested_at[int(row_id)] = accessed_at
+        if int(row_id) not in _touch_inflight_row_ids:
+            _touch_inflight_row_ids.add(int(row_id))
+            should_submit = True
+    if should_submit:
+        _touch_executor.submit(_drain_last_accessed_at_touch, int(row_id))
+
+
+def _drain_last_accessed_at_touch(row_id: int) -> None:
+    while True:
+        with _touch_state_lock:
+            target = _touch_latest_requested_at.pop(int(row_id), None)
+            if target is None:
+                _touch_inflight_row_ids.discard(int(row_id))
+                return
+        _touch_last_accessed_at_best_effort(row_id=int(row_id), accessed_at=target)
+
+
+def _should_schedule_last_accessed_touch(*, current_value: datetime | None, accessed_at: datetime) -> bool:
+    if current_value is None:
+        return True
+    try:
+        return (accessed_at - current_value) >= _touch_min_interval
+    except Exception:
+        return True
 
 
 def _load_json(payload: str | None) -> Any:
@@ -524,11 +564,9 @@ def get_tmdb_detail_cached(
     now = _now()
     row = _get_cache_row(db, media_type=media_type, tmdb_id=tmdb_id, language=language, poster_language=poster_language)
     if row is not None:
-        try:
-            row.last_accessed_at = now
-        except Exception:
-            pass
-        _touch_last_accessed_at_best_effort(row_id=int(getattr(row, "id", 0) or 0), accessed_at=now)
+        should_touch = _should_schedule_last_accessed_touch(current_value=getattr(row, "last_accessed_at", None), accessed_at=now)
+        if should_touch:
+            _schedule_last_accessed_at_touch(row_id=int(getattr(row, "id", 0) or 0), accessed_at=now)
         if force_refresh:
             row2, details, update_weekdays, episode_weekdays = refresh_tmdb_detail_sync(
                 db,

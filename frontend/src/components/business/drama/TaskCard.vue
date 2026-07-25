@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { TaskItem } from '@/types/tasks'
+import type { ResolvedTaskAccount } from '@/utils/taskAccount'
+import { getDriveTypeLabel } from '@/utils/driveType'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,6 +10,8 @@ import { Play, Zap, Pencil, Trash2, Power } from 'lucide-vue-next'
 
 const props = defineProps<{
   task: TaskItem
+  /** 任务生效的网盘账号（由页面基于账号列表解析，自动任务解析为默认账号） */
+  account?: ResolvedTaskAccount
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +68,13 @@ const progressText = computed(() => {
   if (!p?.tmdb_episode) return ''
   return `更新至 第${p.tmdb_episode}集`
 })
+
+const accountLabel = computed(() => {
+  const acc = props.account
+  if (!acc) return ''
+  if (acc.accountName) return acc.isAuto ? `${acc.accountName}（自动）` : acc.accountName
+  return '未识别账号'
+})
 </script>
 
 <template>
@@ -92,6 +103,17 @@ const progressText = computed(() => {
       <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[hsl(var(--muted))] text-[hsl(var(--foreground))]">
         {{ progressText }}
       </span>
+    </div>
+
+    <!-- Drive & account identity -->
+    <div v-if="account" class="flex items-center gap-1.5 text-xs">
+      <Badge
+        variant="outline"
+        class="bg-blue-50 text-blue-700 border-blue-200 text-[10px] px-1.5 py-0 flex-shrink-0"
+      >
+        {{ getDriveTypeLabel(account.driveType) }}
+      </Badge>
+      <span class="truncate text-[hsl(var(--muted-foreground))]" :title="accountLabel">{{ accountLabel }}</span>
     </div>
 
     <!-- Middle: source + savepath -->

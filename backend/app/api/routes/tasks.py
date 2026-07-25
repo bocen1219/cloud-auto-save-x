@@ -1295,6 +1295,8 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     mr = MagicRename(magic_regex=get_enabled_magic_regex_map(db))
     mr.set_taskname(taskname)
     pattern, replace = mr.magic_regex_conv(pattern, replace)
+    filter_only_mode = bool(pattern.strip()) and not bool(replace.strip())
+    default_transfer_all_mode = (not pattern.strip()) and (not replace.strip()) and (not bool(tmdb_series_title))
     try:
         compiled_search = re.compile(pattern) if pattern else None
     except re.error as e:
@@ -1400,6 +1402,54 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
                     item["file_name_saved"] = "目录未命中 update_subdir"
             else:
                 item["file_name_saved"] = "未启用目录转存"
+            preview_list.append(item)
+            continue
+
+        if filter_only_mode:
+            if startfid:
+                if start_ts is not None:
+                    if (_to_ts(updated_at) or 0) <= start_ts:
+                        item["file_name_saved"] = "起始及之前"
+                        preview_list.append(item)
+                        continue
+                elif fid_keep is not None:
+                    if fid not in fid_keep:
+                        item["file_name_saved"] = "起始及之前"
+                        preview_list.append(item)
+                        continue
+
+            matched = (not compiled_search) or bool(compiled_search.search(file_name))
+            if not matched:
+                item["file_name_saved"] = "未命中过滤规则"
+                preview_list.append(item)
+                continue
+
+            saved = mr.is_exists(file_name, dir_filename_list, ignore_ext) if dir_filename_list else None
+            if saved:
+                item["file_name_saved"] = saved
+            else:
+                item["file_name_re"] = file_name
+            preview_list.append(item)
+            continue
+
+        if default_transfer_all_mode:
+            if startfid:
+                if start_ts is not None:
+                    if (_to_ts(updated_at) or 0) <= start_ts:
+                        item["file_name_saved"] = "起始及之前"
+                        preview_list.append(item)
+                        continue
+                elif fid_keep is not None:
+                    if fid not in fid_keep:
+                        item["file_name_saved"] = "起始及之前"
+                        preview_list.append(item)
+                        continue
+
+            saved = mr.is_exists(file_name, dir_filename_list, ignore_ext) if dir_filename_list else None
+            if saved:
+                item["file_name_saved"] = saved
+            else:
+                item["file_name_re"] = file_name
             preview_list.append(item)
             continue
 

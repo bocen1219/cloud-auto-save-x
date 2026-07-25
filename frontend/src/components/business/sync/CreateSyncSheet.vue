@@ -10,6 +10,7 @@ import { useTasksQuery } from '@/hooks/queries/tasks'
 import { browseLocalSync, browseNetdiskSync } from '@/api/syncTasks'
 import { browseOpenList } from '@/api/openlist'
 import type { SyncTaskItem } from '@/types/syncTasks'
+import { extractErrorMessage } from '@/lib/driveAuth'
 
 interface Props {
   open: boolean
@@ -148,7 +149,7 @@ function handleSubmit() {
           emit('close')
         },
         onError: (err: any) => {
-          toast.error('更新失败', { description: err?.message || '未知错误' })
+          toast.error('更新失败', { description: extractErrorMessage(err, '未知错误') })
         },
       },
     )
@@ -160,7 +161,7 @@ function handleSubmit() {
         emit('close')
       },
       onError: (err: any) => {
-        toast.error('创建失败', { description: err?.message || '未知错误' })
+        toast.error('创建失败', { description: extractErrorMessage(err, '未知错误') })
       },
     })
   }

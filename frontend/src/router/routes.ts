@@ -53,6 +53,12 @@ export const appRoutes: RouteRecordRaw[] = [
         meta: { title: '设置' },
       },
       {
+        path: 'docs',
+        name: 'docs',
+        component: () => import('@/pages/DocsPage.vue'),
+        meta: { title: '说明文档' },
+      },
+      {
         path: 'users',
         name: 'users',
         component: () => import('@/pages/UsersPage.vue'),

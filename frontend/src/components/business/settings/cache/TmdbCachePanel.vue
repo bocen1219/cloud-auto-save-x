@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ToggleSwitch } from '@/components/ui/toggle-switch'
-import { RefreshCw, X, Trash2, Timer, Loader2, Copy, Download } from 'lucide-vue-next'
+import { RefreshCw, X, Trash2, Timer, Loader2, Copy, Download, HelpCircle } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import {
   deleteTMDBCacheItem,
@@ -669,7 +669,18 @@ onMounted(refreshAll)
           </div>
           <div class="grid gap-4 sm:grid-cols-2">
             <div>
-              <label class="mb-1 block text-sm font-medium text-[hsl(var(--foreground))]">crontab</label>
+              <label class="mb-1 flex items-center gap-1 text-sm font-medium text-[hsl(var(--foreground))]">
+                crontab
+                <a
+                  href="http://tool.lu/crontab"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="crontab 表达式在线工具（新页面打开）"
+                  class="text-[hsl(var(--muted-foreground))] transition-colors hover:text-[hsl(var(--primary))]"
+                >
+                  <HelpCircle class="h-3.5 w-3.5" />
+                </a>
+              </label>
               <Input v-model="scheduler.data.crontab" placeholder="0 */6 * * *" />
             </div>
             <div>

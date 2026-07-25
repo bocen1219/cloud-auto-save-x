@@ -653,6 +653,7 @@ class DramaTaskExecutor:
         mr = MagicRename(magic_regex=(self.task_data.get("magic_regex") if isinstance(self.task_data.get("magic_regex"), dict) else None))
         mr.set_taskname(taskname)
         pattern, replace = mr.magic_regex_conv(pattern, replace)
+        filter_only_mode = bool(pattern.strip()) and not bool(replace.strip())
         compiled_search = re.compile(pattern) if pattern else None
         compiled_subdir = re.compile(update_subdir) if update_subdir else None
         disable_guessit_fallback = bool(self.task_data.get("disable_guessit_tmdb_fallback_rename") or False)
@@ -711,7 +712,9 @@ class DramaTaskExecutor:
                 continue
             file_name_re = origin_name
             if not _is_dir(raw):
-                if (not disable_guessit_fallback) and (not pattern.strip()) and (not replace.strip()) and bool(tmdb_series_title):
+                if filter_only_mode:
+                    file_name_re = origin_name
+                elif (not disable_guessit_fallback) and (not pattern.strip()) and (not replace.strip()) and bool(tmdb_series_title):
                     try:
                         from app.extensions.runtime.guessit_fallback import guessit_media_target
 
