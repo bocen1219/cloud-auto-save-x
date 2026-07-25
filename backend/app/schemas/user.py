@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.common import Page
 
@@ -12,7 +12,7 @@ class RoleOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    email: EmailStr
+    email: str
     is_active: bool
     roles: list[RoleOut] = []
 
@@ -23,8 +23,16 @@ class UserListOut(Page):
 
 class UserCreateIn(BaseModel):
     username: str = Field(min_length=3, max_length=64)
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            raise ValueError("邮箱不能为空")
+        return value
 
 
 class UserStatusUpdateIn(BaseModel):

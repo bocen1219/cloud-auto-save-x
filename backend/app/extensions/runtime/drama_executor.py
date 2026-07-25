@@ -308,6 +308,17 @@ class DramaTaskExecutor:
             return created
         raise RuntimeError("创建目录失败")
 
+    def _create_dest_subdir_fid(self, relative_path: str) -> str | None:
+        """在保存目录下创建（或获取）子目录 fid，用于首次转存时按规则过滤子目录内容"""
+        savepath = str(self.task_data.get("savepath") or "").rstrip("/")
+        relative = self._normalize_relative_dir(relative_path)
+        full_path = re.sub(r"/{2,}", "/", f"/{savepath}/{relative}")
+        try:
+            return self._ensure_dest_dir_fid(full_path)
+        except Exception as exc:
+            self._line(f"FAIL: 创建目录失败 {full_path} err={str(exc).strip() or type(exc).__name__}")
+            return None
+
     def _list_dest_names(self, dest_fid: str, ignore_extension: bool) -> set[str]:
         listing = self._ls_dir(dest_fid)
         raw_items = (((listing or {}).get("data") or {}).get("list")) or []
@@ -575,6 +586,8 @@ class DramaTaskExecutor:
         parent_node: str,
         depth: int,
         dest_relative_path: str,
+        file_pattern: re.Pattern[str] | None = None,
+        subdir_pattern: re.Pattern[str] | None = None,
     ) -> None:
         if depth > 3:
             return
@@ -588,6 +601,10 @@ class DramaTaskExecutor:
             if not name or not fid:
                 continue
             if _is_dir(raw):
+                # 嵌套目录需命中 update_subdir 才继续递归/转存
+                if subdir_pattern and not subdir_pattern.search(name):
+                    self._line(f"跳过: 子目录未命中 update_subdir {share_dir_name}/{name}")
+                    continue
                 existing_dest_fid = dest_dir_map.get(name)
                 if existing_dest_fid:
                     node_id = f"dir-{dest_dir_name}-{fid}"
@@ -604,12 +621,42 @@ class DramaTaskExecutor:
                         parent_node=node_id,
                         depth=depth + 1,
                         dest_relative_path=self._join_relative_dir(dest_relative_path, name),
+                        file_pattern=file_pattern,
+                        subdir_pattern=subdir_pattern,
                     )
                     continue
+                child_relative = self._join_relative_dir(dest_relative_path, name)
                 self._mark_changed_dir(dest_relative_path)
-                self._mark_changed_dir(self._join_relative_dir(dest_relative_path, name))
+                self._mark_changed_dir(child_relative)
+                if file_pattern is not None or subdir_pattern is not None:
+                    # 首次转存也按规则过滤：先创建目标子目录，再递归筛选转存
+                    new_dest_fid = self._create_dest_subdir_fid(child_relative)
+                    if new_dest_fid:
+                        node_id = f"dir-new-{dest_dir_name}-{fid}"
+                        tree.create_node(f"📁{name}", node_id, parent=parent_node)
+                        self._sync_share_dir(
+                            pwd_id=pwd_id,
+                            stoken=stoken,
+                            share_dir_fid=fid,
+                            share_dir_name=name,
+                            dest_dir_fid=new_dest_fid,
+                            dest_dir_name=name,
+                            ignore_extension=ignore_extension,
+                            tree=tree,
+                            parent_node=node_id,
+                            depth=depth + 1,
+                            dest_relative_path=child_relative,
+                            file_pattern=file_pattern,
+                            subdir_pattern=subdir_pattern,
+                        )
+                        continue
+                    self._line(f"提示: 创建目录失败，回退整目录转存 {share_dir_name}/{name}")
                 self._save_items(pwd_id=pwd_id, stoken=stoken, to_pdir_fid=dest_dir_fid, items=[raw])
                 tree.create_node(f"📁{name}", f"dir-new-{dest_dir_name}-{fid}", parent=parent_node)
+                continue
+            # 子目录内文件仍按 pattern 过滤（仅过滤，不重命名）
+            if file_pattern and not file_pattern.search(name):
+                self._line(f"跳过: 未命中过滤规则 {share_dir_name}/{name}")
                 continue
             if _normalize_name(name, ignore_extension) in dest_file_names:
                 continue
@@ -622,6 +669,21 @@ class DramaTaskExecutor:
             self._mark_changed_dir(dest_relative_path)
             self._save_items(pwd_id=pwd_id, stoken=stoken, to_pdir_fid=dest_dir_fid, items=[raw])
             tree.create_node(f"{name} -> {name}", f"file-{dest_dir_name}-{fid}", parent=parent_node)
+
+    def _compile_subdir_file_pattern(self) -> re.Pattern[str] | None:
+        """子目录内容过滤规则：子目录内文件沿用任务 pattern（含魔法正则转换）过滤"""
+        pattern = str(self.task_data.get("pattern") or "")
+        replace = str(self.task_data.get("replace") or "")
+        mr = MagicRename(magic_regex=(self.task_data.get("magic_regex") if isinstance(self.task_data.get("magic_regex"), dict) else None))
+        mr.set_taskname(str(self.task_data.get("taskname") or ""))
+        pattern, _replace = mr.magic_regex_conv(pattern, replace)
+        if not str(pattern or "").strip():
+            return None
+        try:
+            return re.compile(pattern)
+        except re.error:
+            self._line(f"提示: pattern 正则不合法，子目录内容不做过滤 pattern={pattern}")
+            return None
 
     def _iter_files(self, items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -1038,6 +1100,9 @@ class DramaTaskExecutor:
         if compiled_subdir:
             self._set_stage("subdir_sync")
             self._section("子目录转存")
+            subdir_file_pattern = self._compile_subdir_file_pattern()
+            if subdir_file_pattern is not None:
+                self._line(f"子目录内容过滤规则: {subdir_file_pattern.pattern}")
             for raw in natsorted(share_items, key=lambda x: _get_name(x)):
                 if not _is_dir(raw):
                     continue
@@ -1053,6 +1118,28 @@ class DramaTaskExecutor:
                         self.adapter.delete([existing_dest_fid])
                     self._mark_changed_dir("")
                     self._mark_changed_dir(name)
+                    # 重存同样按规则过滤：先建目标子目录，再递归筛选转存
+                    new_dest_fid = self._create_dest_subdir_fid(name)
+                    if new_dest_fid:
+                        node_id = f"dir-resave-{fid}"
+                        tree.create_node(f"📁{name}（重存）", node_id, parent="root")
+                        self._sync_share_dir(
+                            pwd_id=str(pwd_id),
+                            stoken=str(stoken),
+                            share_dir_fid=fid,
+                            share_dir_name=name,
+                            dest_dir_fid=new_dest_fid,
+                            dest_dir_name=name,
+                            ignore_extension=ignore_extension,
+                            tree=tree,
+                            parent_node=node_id,
+                            depth=0,
+                            dest_relative_path=name,
+                            file_pattern=subdir_file_pattern,
+                            subdir_pattern=compiled_subdir,
+                        )
+                        continue
+                    self._line(f"提示: 创建目录失败，回退整目录转存 {name}")
                     self._save_items(pwd_id=str(pwd_id), stoken=str(stoken), to_pdir_fid=dest_root_fid, items=[raw])
                     tree.create_node(f"📁{name}（重存）", f"dir-resave-{fid}", parent="root")
                     continue
@@ -1072,10 +1159,34 @@ class DramaTaskExecutor:
                         parent_node=node_id,
                         depth=0,
                         dest_relative_path=name,
+                        file_pattern=subdir_file_pattern,
+                        subdir_pattern=compiled_subdir,
                     )
                     continue
                 self._mark_changed_dir("")
                 self._mark_changed_dir(name)
+                # 首次转存也按规则过滤：先创建目标子目录，再递归筛选转存
+                new_dest_fid = self._create_dest_subdir_fid(name)
+                if new_dest_fid:
+                    node_id = f"dir-new-{fid}"
+                    tree.create_node(f"📁{name}", node_id, parent="root")
+                    self._sync_share_dir(
+                        pwd_id=str(pwd_id),
+                        stoken=str(stoken),
+                        share_dir_fid=fid,
+                        share_dir_name=name,
+                        dest_dir_fid=new_dest_fid,
+                        dest_dir_name=name,
+                        ignore_extension=ignore_extension,
+                        tree=tree,
+                        parent_node=node_id,
+                        depth=0,
+                        dest_relative_path=name,
+                        file_pattern=subdir_file_pattern,
+                        subdir_pattern=compiled_subdir,
+                    )
+                    continue
+                self._line(f"提示: 创建目录失败，回退整目录转存 {name}")
                 self._save_items(pwd_id=str(pwd_id), stoken=str(stoken), to_pdir_fid=dest_root_fid, items=[raw])
                 tree.create_node(f"📁{name}", f"dir-new-{fid}", parent="root")
 
