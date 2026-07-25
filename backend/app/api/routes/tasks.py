@@ -1494,7 +1494,20 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
                     except Exception:
                         file_name_re = file_name
                 else:
-                    file_name_re = mr.sub(pattern, replace, file_name)
+                    try:
+                        file_name_re = mr.sub(pattern, replace, file_name)
+                    except re.error as e:
+                        detail = str(e)
+                        if "invalid group reference" in detail:
+                            raise bad_request(
+                                "TASK_REGEX_INVALID",
+                                "replace 规则不合法: 引用了不存在的捕获分组",
+                                detail=detail,
+                            ) from e
+                        raise bad_request(
+                            "TASK_REGEX_INVALID",
+                            f"replace 规则不合法: {detail}",
+                        ) from e
             saved = mr.is_exists(file_name_re, dir_filename_list, ignore_ext and not is_dir) if dir_filename_list else None
             if saved:
                 item["file_name_saved"] = saved
