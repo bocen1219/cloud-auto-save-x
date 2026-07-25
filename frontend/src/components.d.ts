@@ -56,6 +56,7 @@ declare module 'vue' {
     Sidebar: typeof import('./components/layout/Sidebar.vue')['default']
     Skeleton: typeof import('./components/ui/skeleton/Skeleton.vue')['default']
     StreamLogDialog: typeof import('./components/business/common/StreamLogDialog.vue')['default']
+    SyncFileRow: typeof import('./components/business/sync/SyncFileRow.vue')['default']
     SyncLogDialog: typeof import('./components/business/sync/SyncLogDialog.vue')['default']
     SyncTaskCard: typeof import('./components/business/sync/SyncTaskCard.vue')['default']
     TaskCard: typeof import('./components/business/drama/TaskCard.vue')['default']

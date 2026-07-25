@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import posixpath
 from typing import Any
 
 from sqlalchemy import case, delete, func, select
@@ -225,6 +226,96 @@ def delete_drive_account_lsdir_cache_subtree_by_path(db: Session, *, account_id:
     return int(getattr(res, "rowcount", 0) or 0)
 
 
+def _delete_drive_account_lsdir_cache_descendants_by_path(db: Session, *, account_id: int, full_path: str) -> int:
+    path = _normalize_parent_path(full_path)
+    if path == "/":
+        return 0
+    like_prefix = f"{path}/%"
+    res = db.execute(
+        delete(DriveAccountLsdirCache).where(
+            DriveAccountLsdirCache.account_id == int(account_id),
+            DriveAccountLsdirCache.full_path.like(like_prefix),
+        )
+    )
+    db.flush()
+    return int(getattr(res, "rowcount", 0) or 0)
+
+
+def _delete_drive_account_lsdir_cache_duplicates_by_fid(
+    db: Session,
+    *,
+    account_id: int,
+    fid_to_full_path: dict[str, str],
+) -> None:
+    if not fid_to_full_path:
+        return
+    rows = (
+        db.execute(
+            select(DriveAccountLsdirCache).where(
+                DriveAccountLsdirCache.account_id == int(account_id),
+                DriveAccountLsdirCache.fid.in_(list(fid_to_full_path.keys())),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        target_path = fid_to_full_path.get(str(row.fid or ""))
+        current_path = str(row.full_path or "")
+        if not target_path or current_path == target_path:
+            continue
+        if bool(getattr(row, "is_dir", False)):
+            delete_drive_account_lsdir_cache_subtree_by_path(
+                db,
+                account_id=int(account_id),
+                full_path=current_path,
+            )
+        else:
+            delete_drive_account_lsdir_cache_by_path(
+                db,
+                account_id=int(account_id),
+                full_path=current_path,
+            )
+
+
+def _list_drive_account_lsdir_direct_children_by_path(
+    db: Session,
+    *,
+    account_id: int,
+    parent_path: str,
+) -> list[DriveAccountLsdirCache]:
+    normalized_parent = _normalize_parent_path(parent_path)
+    if normalized_parent == "/":
+        rows = (
+            db.execute(
+                select(DriveAccountLsdirCache).where(
+                    DriveAccountLsdirCache.account_id == int(account_id),
+                )
+            )
+            .scalars()
+            .all()
+        )
+    else:
+        like_prefix = f"{normalized_parent}/%"
+        rows = (
+            db.execute(
+                select(DriveAccountLsdirCache).where(
+                    DriveAccountLsdirCache.account_id == int(account_id),
+                    DriveAccountLsdirCache.full_path.like(like_prefix),
+                )
+            )
+            .scalars()
+            .all()
+        )
+    result: list[DriveAccountLsdirCache] = []
+    for row in rows:
+        full_path = _normalize_parent_path(getattr(row, "full_path", None))
+        if _normalize_parent_path(posixpath.dirname(full_path) or "/") != normalized_parent:
+            continue
+        result.append(row)
+    return result
+
+
 def upsert_drive_account_lsdir_items(
     db: Session,
     *,
@@ -241,23 +332,33 @@ def upsert_drive_account_lsdir_items(
         deduped_items[str(item["full_path"])] = item
     normalized_items = list(deduped_items.values())
     current_paths = [item["full_path"] for item in normalized_items]
+    current_paths_by_fid = {str(item["fid"]): str(item["full_path"]) for item in normalized_items if str(item.get("fid") or "").strip()}
 
-    existing_map: dict[str, DriveAccountLsdirCache] = {}
-    if current_paths:
-        existing_rows = (
-            db.execute(
-                select(DriveAccountLsdirCache).where(
-                    DriveAccountLsdirCache.account_id == int(account_id),
-                    DriveAccountLsdirCache.full_path.in_(current_paths),
-                )
+    existing_children = (
+        db.execute(
+            select(DriveAccountLsdirCache).where(
+                DriveAccountLsdirCache.account_id == int(account_id),
+                DriveAccountLsdirCache.parent_fid == str(parent_fid or ""),
             )
-            .scalars()
-            .all()
         )
-        existing_map = {str(row.full_path): row for row in existing_rows}
+        .scalars()
+        .all()
+    )
+    existing_map = {str(row.full_path): row for row in existing_children}
+    existing_by_fid = {str(row.fid): row for row in existing_children if str(getattr(row, "fid", "") or "").strip()}
+    renamed_directory_paths: set[str] = set()
 
     for item in normalized_items:
         row = existing_map.get(item["full_path"])
+        if row is None:
+            row = existing_by_fid.get(str(item["fid"]))
+            if row is not None:
+                old_full_path = str(row.full_path or "")
+                if old_full_path and old_full_path != str(item["full_path"]) and bool(getattr(row, "is_dir", False)):
+                    renamed_directory_paths.add(old_full_path)
+                if old_full_path:
+                    existing_map.pop(old_full_path, None)
+                existing_map[str(item["full_path"])] = row
         if row is None:
             row = DriveAccountLsdirCache(
                 account_id=int(account_id),
@@ -279,17 +380,26 @@ def upsert_drive_account_lsdir_items(
         row.children_count = item["children_count"]
         row.scanned_at = now
 
-    existing_children = (
-        db.execute(
-            select(DriveAccountLsdirCache).where(
-                DriveAccountLsdirCache.account_id == int(account_id),
-                DriveAccountLsdirCache.parent_fid == str(parent_fid or ""),
-            )
+    db.flush()
+
+    for old_full_path in sorted(renamed_directory_paths):
+        _delete_drive_account_lsdir_cache_descendants_by_path(
+            db,
+            account_id=int(account_id),
+            full_path=old_full_path,
         )
-        .scalars()
-        .all()
+    _delete_drive_account_lsdir_cache_duplicates_by_fid(
+        db,
+        account_id=int(account_id),
+        fid_to_full_path=current_paths_by_fid,
     )
-    stale_children = [row for row in existing_children if row.full_path not in current_paths]
+
+    reconciled_children = _list_drive_account_lsdir_direct_children_by_path(
+        db,
+        account_id=int(account_id),
+        parent_path=parent_path,
+    )
+    stale_children = [row for row in reconciled_children if _normalize_parent_path(row.full_path) not in current_paths]
     for row in stale_children:
         if bool(getattr(row, "is_dir", False)):
             delete_drive_account_lsdir_cache_subtree_by_path(

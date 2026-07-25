@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, watch, nextTick, onBeforeUnmount, computed } from 'vue'
-import { Badge } from '@/components/ui/badge'
+import SyncFileRow from '@/components/business/sync/SyncFileRow.vue'
 import { useStreamLog } from '@/composables/useStreamLog'
 import { fetchSyncExecutionLatest, fetchSyncExecutionFiles, cancelSyncExecution } from '@/api/syncTasks'
 
@@ -169,25 +169,6 @@ async function handleStop() {
   stop()
   status.value = 'done'
   emit('done')
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`
-}
-
-function statusLabel(s: string): string {
-  const map: Record<string, string> = { success: 'OK', syncing: 'SYNC', pending: 'PEND', skipped: 'SKIP', aborted: 'ABRT' }
-  return map[s] || 'FAIL'
-}
-
-function statusColorClass(s: string): string {
-  if (s === 'syncing' || s === 'pending') return 'text-blue-500 border-blue-300 bg-blue-50 dark:bg-blue-950/30'
-  if (s === 'success') return 'text-emerald-500 border-emerald-300 bg-emerald-50 dark:bg-emerald-950/30'
-  if (s === 'skipped' || s === 'aborted') return 'text-gray-400 border-gray-300 bg-gray-50 dark:bg-gray-800/30'
-  return 'text-red-500 border-red-300 bg-red-50 dark:bg-red-950/30'
 }
 
 // --- File table sort & pagination ---
@@ -530,21 +511,11 @@ onBeforeUnmount(() => {
                 >
                   {{ status === 'connecting' ? '正在连接...' : '暂无文件事件' }}
                 </div>
-                <div
+                <SyncFileRow
                   v-for="(ev, idx) in filePageItems"
                   :key="ev.path || idx"
-                  class="grid grid-cols-[70px_60px_1fr_80px_140px] gap-1 px-4 py-1.5 text-xs border-b border-[hsl(var(--border)/.5)] hover:bg-[hsl(var(--accent)/.3)]"
-                >
-                  <span class="inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-semibold border" :class="statusColorClass(ev.status)">
-                    {{ statusLabel(ev.status) }}
-                  </span>
-                  <Badge :variant="ev.action === 'delete' ? 'destructive' : 'secondary'" class="text-[10px] w-fit h-fit">
-                    {{ ev.action }}
-                  </Badge>
-                  <span class="truncate text-[hsl(var(--foreground))]" :title="ev.path">{{ ev.path }}</span>
-                  <span class="text-[hsl(var(--muted-foreground))]">{{ ev.size ? formatSize(ev.size) : '-' }}</span>
-                  <span class="truncate text-[hsl(var(--muted-foreground))]" :title="ev.message || ev.ts || ''">{{ ev.message || ev.ts || '-' }}</span>
-                </div>
+                  :ev="ev"
+                />
               </div>
               <!-- Pagination -->
               <div v-if="sortedFileEvents.length > 0" class="flex items-center justify-between px-3 py-2 border-t border-[hsl(var(--border))] text-xs">

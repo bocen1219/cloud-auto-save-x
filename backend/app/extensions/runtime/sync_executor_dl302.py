@@ -13,10 +13,14 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
+from treelib import Tree
 
 from app.core.errors import ApiError, bad_request
 from app.db.session import SessionLocal, is_lock_error
 from app.extensions.runtime.execution_log import ExecutionLog
+from app.extensions.runtime.plugin_hooks import PluginHookRunner
+from app.extensions.runtime.sync_plugin_loader import sync_sync_plugin_definitions
+from app.extensions.runtime.sync_plugin_registry import SyncPluginRegistry
 from app.models.sync_execution import SyncExecution
 from app.models.sync_execution_file import SyncExecutionFile
 from app.models.sync_task import SyncTask
@@ -381,6 +385,18 @@ class Dl302SyncExecutor:
                 )
                 execution.status = "success"
                 execution.message = "success"
+                try:
+                    self._run_sync_plugins(
+                        task=task,
+                        source=source,
+                        target=target,
+                        strategy=strategy,
+                        execution_id=int(execution.id),
+                        stats=final_stats,
+                        log=log,
+                    )
+                finally:
+                    log.set_stage("done")
             elif final_status == "cancelled":
                 self._mark_inflight_rows_aborted(int(execution.id))
                 log.set_stage("aborted")
@@ -746,6 +762,12 @@ class Dl302SyncExecutor:
                 if last_error:
                     return f"重试 {retry_count}: {last_error}"
                 return f"重试 {retry_count}"
+            stage_done = int(getattr(item, "stage_done", 0) or 0)
+            if stage in {"start", "resolve_source", "check_conflict", "native_copy"} and stage_done <= 0:
+                base_label = stage_label or "准备"
+                if retry_count > 0:
+                    return f"{base_label}（重试 {retry_count}）"
+                return base_label
             progress_percent = self._item_progress_percent(item)
             if progress_percent is not None:
                 if stage_label:
@@ -758,6 +780,10 @@ class Dl302SyncExecutor:
     def _stage_label(self, stage: str) -> str:
         normalized = str(stage or "").strip()
         return {
+            "start": "准备",
+            "resolve_source": "寻源",
+            "check_conflict": "校验去重",
+            "native_copy": "服务端复制",
             "downloading": "下载",
             "hashing": "校验",
             "uploading": "上传",
@@ -807,6 +833,129 @@ class Dl302SyncExecutor:
             if text:
                 return text
         return f"item-{int(getattr(item, 'id', 0) or 0)}"
+
+    def _run_sync_plugins(
+        self,
+        *,
+        task: SyncTask,
+        source: Dl302Endpoint,
+        target: Dl302Endpoint,
+        strategy: Dl302Strategy,
+        execution_id: int,
+        stats: dict[str, Any],
+        log: ExecutionLog,
+    ) -> None:
+        copied_files = int((stats or {}).get("copied_files", 0) or 0)
+        if copied_files <= 0:
+            log.set_stage("sync_plugin_run")
+            log.section("插件执行")
+            log.line("跳过: 本次无新增同步文件")
+            return
+        try:
+            def _load_plugins(db: Session):
+                sync_sync_plugin_definitions(db)
+                return SyncPluginRegistry(db).load_active_plugins()
+
+            plugins = self._write_with_session(_load_plugins)
+            if not plugins:
+                return
+
+            addition: dict[str, Any] = {}
+            raw_addition = getattr(task, "addition_json", None)
+            if raw_addition:
+                try:
+                    parsed = json.loads(raw_addition)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    addition = parsed
+
+            sync_task_data: dict[str, Any] = {
+                "uid": str(getattr(task, "uid", "") or ""),
+                "name": str(getattr(task, "name", "") or ""),
+                "enabled": bool(getattr(task, "enabled", True)),
+                "source": {"type": source.type, "path": source.path},
+                "target": {"type": target.type, "path": target.path},
+                "mode": "one_way",
+                "strategy": {
+                    "overwrite": bool(strategy.overwrite),
+                    "force_refresh": bool(strategy.force_refresh),
+                    "concurrency": int(strategy.concurrency),
+                },
+                "addition": addition,
+                "execution_id": int(execution_id),
+                "stats": stats,
+            }
+
+            sync_tree = self._build_sync_tree(
+                int(execution_id),
+                name=sync_task_data.get("name") or "sync",
+                uid=sync_task_data.get("uid"),
+            )
+
+            log.set_stage("sync_plugin_task_before")
+            log.section("插件前置")
+            updated_list = PluginHookRunner.task_before(plugins, [sync_task_data], None, emit_line=log.line)
+            sync_task_data = updated_list[0] if updated_list else sync_task_data
+
+            log.set_stage("sync_plugin_run")
+            log.section("插件执行")
+            sync_task_data = PluginHookRunner.run(plugins, sync_task_data, None, sync_tree, emit_line=log.line)
+
+            log.set_stage("sync_plugin_task_after")
+            log.section("插件收尾")
+            PluginHookRunner.task_after(plugins, [sync_task_data], None, emit_line=log.line)
+        except Exception as exc:
+            log.set_stage("sync_plugin_error")
+            log.section("插件异常")
+            log.line(str(exc).strip() or type(exc).__name__)
+
+    def _build_sync_tree(self, execution_id: int, *, name: str, uid: Any) -> Tree:
+        sync_tree = Tree()
+        sync_tree.create_node(
+            str(name or "sync"),
+            "root",
+            data={"type": "sync_task", "uid": uid},
+        )
+        file_rows = self._read_with_session(
+            lambda db: (
+                db.execute(
+                    select(SyncExecutionFile)
+                    .where(SyncExecutionFile.sync_execution_id == int(execution_id))
+                    .order_by(SyncExecutionFile.path.asc())
+                )
+                .scalars()
+                .all()
+            )
+        )
+        for row in file_rows[:5000]:
+            p = str(getattr(row, "path", "") or "").strip()
+            if not p:
+                continue
+            segments = [s for s in p.strip("/").split("/") if s]
+            parent = "root"
+            cur = ""
+            for seg in segments[:-1]:
+                cur = f"{cur}/{seg}" if cur else seg
+                if not sync_tree.contains(cur):
+                    sync_tree.create_node(seg, cur, parent=parent, data={"is_dir": True, "path": cur})
+                parent = cur
+            leaf_id = f"{cur}/{segments[-1]}" if segments else p
+            if not sync_tree.contains(leaf_id):
+                sync_tree.create_node(
+                    segments[-1] if segments else p,
+                    leaf_id,
+                    parent=parent,
+                    data={
+                        "path": p,
+                        "action": getattr(row, "action", None),
+                        "status": getattr(row, "status", None),
+                        "size": getattr(row, "size", None),
+                        "message": getattr(row, "message", None),
+                        "is_dir": False,
+                    },
+                )
+        return sync_tree
 
     def _map_item_status(self, status: str) -> str:
         return {
