@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 import logging
 from typing import Any
@@ -50,6 +51,22 @@ def _extract_execution_log_section_lines(run_log: str, title: str) -> list[str]:
         if in_section:
             collected.append(line)
     return collected
+
+
+def _random_sleep(max_seconds: int, label: str) -> float:
+    """自动调度随机休眠：随机取 0~max_seconds 秒，打散周期内的固定运行时间点"""
+    if settings.environment == "test" or os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0.0
+    try:
+        limit = int(max_seconds or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        return 0.0
+    seconds = random.uniform(0, limit)
+    logger.info("追剧任务调度随机休眠: %s %.1f 秒（上限 %s 秒）", label, seconds, limit)
+    time.sleep(seconds)
+    return seconds
 
 
 class TaskSchedulerManager:
@@ -216,6 +233,8 @@ class TaskSchedulerManager:
 
 
 def run_drama_tasks() -> None:
+    # 整批开始前随机延迟，避免每个调度周期都在同一时间点运行
+    _random_sleep(settings.drama_schedule_random_delay_max_seconds, "整批延迟")
     task_ids: list[int] = []
     task_payloads: list[dict[str, Any]] = []
     with SessionLocal() as db:
@@ -249,7 +268,10 @@ def run_drama_tasks() -> None:
     sections: list[str] = []
     linked_candidates: list[DramaLinkedBatchItem] = []
 
-    for task_id in task_ids:
+    for index, task_id in enumerate(task_ids):
+        if index > 0:
+            # 任务之间随机间隔，避免连续请求过于密集
+            _random_sleep(settings.drama_schedule_task_interval_max_seconds, "任务间隔")
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:

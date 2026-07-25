@@ -172,6 +172,10 @@ services:
 | `DRAMA_RUNTIME_RETRY_JITTER_RATIO`        | `0.2`        | 重试延迟随机化比例，默认0.2 |
 | `DL302_COPY_PART_CONCURRENCY`        | `4`        | dl302 下载模式分片并发数，值大于 1 时会优先对 HTTP/HTTPS 源启用并发 Range 下载 |
 | `DL302_COPY_PART_SIZE_MB`        | `10`        | dl302 下载模式单分片大小（MB），与 `DL302_COPY_PART_CONCURRENCY` 配合控制并发下载粒度 |
+| `DRAMA_SCHEDULE_RANDOM_DELAY_MAX_SECONDS`        | `300`        | 最大任务随机延迟时间，默认300秒 |
+| `DRAMA_SCHEDULE_TASK_INTERVAL_MAX_SECONDS`        | `30`        | 最大任务间隔时间，默认30秒 |
+
+
 
 ### 使用 MySQL
 

@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     drama_runtime_retry_max_backoff_seconds: float = 8.0
     drama_runtime_retry_jitter_ratio: float = 0.2
 
+    drama_schedule_random_delay_max_seconds: int = 300
+    drama_schedule_task_interval_max_seconds: int = 30
+
     jwt_secret_key: str | None = None
     jwt_algorithm: str = "HS256"
     access_token_expires_seconds: int = 2 * 60 * 60
