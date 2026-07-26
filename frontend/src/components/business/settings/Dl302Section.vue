@@ -30,6 +30,7 @@ import {
   HardDrive,
   Plus,
   Trash2,
+  BookOpen,
 } from 'lucide-vue-next'
 import {
   fetchDL302SupportedDrivers,
@@ -505,6 +506,18 @@ onBeforeUnmount(stopPoller)
 
         <!-- CAS settings -->
         <SettingCard title="CAS 设置" description="CAS 秒传数据生成的全局参数" :icon="Database">
+          <template #actions>
+            <a
+              href="/docs#cas-settings"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="查看 CAS 参数说明（新页面打开）"
+              class="inline-flex items-center gap-0.5 text-xs text-[hsl(var(--primary))] hover:underline"
+            >
+              <BookOpen class="h-3 w-3" />
+              参数说明
+            </a>
+          </template>
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label class="mb-1.5 block text-sm font-medium text-[hsl(var(--foreground))]">CAS 文件生成目录</label>
@@ -619,6 +632,18 @@ onBeforeUnmount(stopPoller)
       <div v-show="activeTab === 'proxy'" class="max-w-3xl space-y-4">
         <!-- 多目标反代列表 -->
         <SettingCard title="反代目标" description="配置多个反代目标，每个系统独立端口和处理方式" :icon="Server">
+          <template #actions>
+            <a
+              href="/docs#proxy-settings"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="查看反代参数说明（新页面打开）"
+              class="inline-flex items-center gap-0.5 text-xs text-[hsl(var(--primary))] hover:underline"
+            >
+              <BookOpen class="h-3 w-3" />
+              参数说明
+            </a>
+          </template>
           <div v-if="proxyTargets.length === 0" class="rounded-lg border border-dashed border-[hsl(var(--border))] py-6 text-center text-sm text-[hsl(var(--muted-foreground))]">
             暂无反代目标，点击下方按钮添加
           </div>
@@ -751,6 +776,18 @@ onBeforeUnmount(stopPoller)
         </div>
 
         <SettingCard title="STRM 生成" description="自动生成媒体库可播放的 .strm 文件" :icon="FileCode2">
+          <template #actions>
+            <a
+              href="/docs#strm-settings"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="查看 STRM 参数说明（新页面打开）"
+              class="inline-flex items-center gap-0.5 text-xs text-[hsl(var(--primary))] hover:underline"
+            >
+              <BookOpen class="h-3 w-3" />
+              参数说明
+            </a>
+          </template>
           <!-- toggles -->
           <div class="flex items-start justify-between gap-4 rounded-lg bg-[hsl(var(--muted))]/40 p-3">
             <div class="min-w-0">

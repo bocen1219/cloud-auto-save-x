@@ -2,7 +2,7 @@
 import { computed, watch, reactive, ref } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Eye, EyeOff, X } from 'lucide-vue-next'
+import { Eye, EyeOff, X, BookOpen } from 'lucide-vue-next'
 import type { ConfigFieldItem, DriveAccountItem, DriveTypeItem } from '@/types/extensions'
 
 interface Props {
@@ -43,6 +43,12 @@ const isEditing = computed(() => Boolean(props.editAccount?.id))
 const currentDriveType = computed(() => props.driveTypes.find((item) => item.code === state.drive_type) || null)
 const currentDriveFields = computed<ConfigFieldItem[]>(() => currentDriveType.value?.config_fields || [])
 const isTvCredentialDrive = computed(() => ['quark', 'uc'].includes(String(state.drive_type || '').trim().toLowerCase()))
+
+// 路径类配置字段：label 旁展示「路径说明」文档跳转
+const PATH_FIELD_KEYS = new Set(['lsdir_cache_path', 'strm_scan_path', 'static_lsdir_cache_path', '302_path'])
+function isPathField(key: string): boolean {
+  return PATH_FIELD_KEYS.has(String(key || '').trim())
+}
 
 function cloneConfig<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? {}))
@@ -218,8 +224,19 @@ function handleSubmit() {
               </div>
 
               <div v-for="field in currentDriveFields" :key="field.key" class="space-y-2">
-                <label class="text-sm text-[hsl(var(--muted-foreground))]">
-                  {{ field.label || field.key }}
+                <label class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))]">
+                  <span>{{ field.label || field.key }}</span>
+                  <a
+                    v-if="isPathField(field.key)"
+                    href="/docs#drive-paths"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="查看路径配置说明（新页面打开）"
+                    class="inline-flex items-center gap-0.5 text-xs text-[hsl(var(--primary))] hover:underline"
+                  >
+                    <BookOpen class="h-3 w-3" />
+                    路径说明
+                  </a>
                 </label>
 
                 <!-- Switch -->

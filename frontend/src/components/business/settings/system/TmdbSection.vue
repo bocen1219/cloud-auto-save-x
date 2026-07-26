@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { SettingCard } from '@/components/ui/setting-card'
 import { ToggleSwitch } from '@/components/ui/toggle-switch'
-import { Save, Loader2, Clapperboard } from 'lucide-vue-next'
+import { Save, Loader2, Clapperboard, BookOpen } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useTMDBConfigQuery } from '@/hooks/queries/settings'
 import { usePatchTMDBConfigMutation } from '@/hooks/mutations/settings'
@@ -93,15 +93,33 @@ function save() {
         <ToggleSwitch v-model="form.enableGuessitFallbackRename" />
       </div>
 
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label class="mb-1.5 block text-sm font-medium text-[hsl(var(--foreground))]">剧集重命名模板</label>
-          <Input v-model="form.tvRenameTemplate" placeholder="{title}.S{season}E{episode}{ext}" />
+      <div>
+        <div class="mb-1.5 flex items-center justify-between">
+          <span class="text-sm font-medium text-[hsl(var(--foreground))]">重命名模板</span>
+          <a
+            href="/docs#tmdb-variables"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="查看模板变量说明（新页面打开）"
+            class="inline-flex items-center gap-0.5 text-xs text-[hsl(var(--primary))] hover:underline"
+          >
+            <BookOpen class="h-3 w-3" />
+            模板变量说明
+          </a>
         </div>
-        <div>
-          <label class="mb-1.5 block text-sm font-medium text-[hsl(var(--foreground))]">电影重命名模板</label>
-          <Input v-model="form.movieRenameTemplate" placeholder="{title_dot}.{year}{ext}" />
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="mb-1.5 block text-xs text-[hsl(var(--muted-foreground))]">剧集模板</label>
+            <Input v-model="form.tvRenameTemplate" placeholder="{title}.S{season}E{episode}{ext}" />
+          </div>
+          <div>
+            <label class="mb-1.5 block text-xs text-[hsl(var(--muted-foreground))]">电影模板</label>
+            <Input v-model="form.movieRenameTemplate" placeholder="{title_dot}.{year}{ext}" />
+          </div>
         </div>
+        <p class="mt-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+          模板支持 <code class="rounded bg-[hsl(var(--muted))] px-1">{title}</code>、<code class="rounded bg-[hsl(var(--muted))] px-1">{season}</code>、<code class="rounded bg-[hsl(var(--muted))] px-1">{episode}</code> 等变量，详见上方说明。
+        </p>
       </div>
 
       <template #footer>

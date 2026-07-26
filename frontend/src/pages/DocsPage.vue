@@ -26,6 +26,56 @@ const tocGroups: TocGroup[] = [
     ],
   },
   {
+    id: 'tmdb-guide',
+    label: 'TMDB 智能重命名',
+    emoji: '🎬',
+    children: [
+      { id: 'tmdb-overview', label: 'TMDB 设置总览' },
+      { id: 'tmdb-variables', label: '模板变量表' },
+      { id: 'tmdb-examples', label: '模板实战示例' },
+      { id: 'tmdb-guessit', label: 'Guessit 兜底机制' },
+    ],
+  },
+  {
+    id: 'dl302-guide',
+    label: '302 代理 / CAS / STRM',
+    emoji: '🌐',
+    children: [
+      { id: 'dl302-overview', label: '概念速览' },
+      { id: 'cas-settings', label: 'CAS 参数说明' },
+      { id: 'strm-settings', label: 'STRM 参数说明' },
+      { id: 'proxy-settings', label: '反代参数说明' },
+    ],
+  },
+  {
+    id: 'drive-guide',
+    label: '网盘账号',
+    emoji: '☁️',
+    children: [
+      { id: 'drive-paths', label: '三个路径配置的区别' },
+    ],
+  },
+  {
+    id: 'cache-guide',
+    label: '缓存管理',
+    emoji: '💾',
+    children: [
+      { id: 'cache-overview', label: '三类缓存说明' },
+      { id: 'tmdb-cache', label: 'TMDB 缓存与定时刷新' },
+    ],
+  },
+  {
+    id: 'misc-guide',
+    label: '通知与其他',
+    emoji: '🔔',
+    children: [
+      { id: 'notifications', label: '通知渠道' },
+      { id: 'transfer-settings', label: '转存设置' },
+      { id: 'resource-search', label: '资源搜索' },
+      { id: 'openlist', label: 'OpenList' },
+    ],
+  },
+  {
     id: 'schedule-guide',
     label: '定时任务',
     emoji: '⏰',
@@ -132,6 +182,61 @@ const magicVariableDocs = [
   { name: '{PART}', desc: '上/中/下等部分标识', example: '「第5期上」→ 上' },
   { name: '{VER}', desc: '「xx版」版本标识', example: '「精编版」→ 精编版' },
   { name: '{I} / {II} / {III}', desc: '自动递增序号，I 的个数决定补零位数；会接着目标目录里已有的序号继续编号', example: '{II} → 01、02、03…' },
+]
+
+// TMDB 重命名模板变量（与后端 guessit_fallback._build_guessit_tags / ctx 对齐）
+const tmdbVariableDocs = [
+  { name: '{title}', desc: 'TMDB 剧集/电影标题（已按语言设置本地化）', example: '庆余年' },
+  { name: '{title_dot}', desc: '标题中的空格替换为点号', example: '庆余年 第二季 → 庆余年.第二季' },
+  { name: '{season}', desc: '季号，两位补零', example: 'S02' },
+  { name: '{episode}', desc: '集号，两位补零', example: 'E03' },
+  { name: '{season_num}', desc: '季号数字（不补零）', example: '2' },
+  { name: '{episode_num}', desc: '集号数字（不补零）', example: '3' },
+  { name: '{year}', desc: '年份（电影为上映年，剧集为首播年）', example: '2024' },
+  { name: '{ext}', desc: '扩展名（带点）', example: '.mp4' },
+  { name: '{orig}', desc: '原始完整文件名（含扩展名）', example: '庆余年.S02E03.1080p.mp4' },
+  { name: '{orig_base}', desc: '原始文件名（不含扩展名）', example: '庆余年.S02E03.1080p' },
+  { name: '{orig_base_dot}', desc: '原始文件名（不含扩展名，空格转点）', example: '庆余年.S02E03.1080p' },
+  { name: '{screen_size}', desc: '分辨率（guessit 识别）', example: '1080p' },
+  { name: '{source}', desc: '片源（guessit 识别）', example: 'Web' },
+  { name: '{video_codec}', desc: '视频编码', example: 'H.265' },
+  { name: '{audio_codec}', desc: '音频编码', example: 'AAC' },
+  { name: '{audio_channels}', desc: '声道数', example: '5.1' },
+  { name: '{release_group}', desc: '压制组', example: 'Group' },
+  { name: '{container}', desc: '容器格式', example: 'mp4' },
+  { name: '{language}', desc: '语言', example: '中文' },
+  { name: '{subtitle_language}', desc: '字幕语言', example: '简中' },
+  { name: '{other}', desc: '其他标签（HDR 等）', example: 'HDR' },
+  { name: '{tags} / {tags_dot}', desc: '上述媒体标签用点号拼接', example: '1080p.Web.H.265' },
+  { name: '{tags_space}', desc: '上述媒体标签用空格拼接', example: '1080p Web H.265' },
+]
+
+const tmdbTemplateExamples = [
+  {
+    name: '标准剧集（默认）',
+    tpl: '{title}.S{season}E{episode}{ext}',
+    result: '庆余年.S02E03.mp4',
+  },
+  {
+    name: '剧集带分辨率',
+    tpl: '{title}.S{season}E{episode}.{screen_size}{ext}',
+    result: '庆余年.S02E03.1080p.mp4',
+  },
+  {
+    name: '剧集带完整标签',
+    tpl: '{title}.S{season}E{episode}.{tags_dot}{ext}',
+    result: '庆余年.S02E03.1080p.Web.H.265.mp4',
+  },
+  {
+    name: '电影（默认）',
+    tpl: '{title_dot}.{year}{ext}',
+    result: '流浪地球.2.2023.mp4',
+  },
+  {
+    name: '电影带分辨率',
+    tpl: '{title_dot}.{year}.{screen_size}{ext}',
+    result: '流浪地球.2.2023.2160p.mp4',
+  },
 ]
 
 // crontab 常用示例
@@ -413,6 +518,442 @@ const cronExamples = [
             <li><strong class="text-[hsl(var(--foreground))]">测试正则</strong>：「设置 → 重命名规则」的编辑弹窗里有测试面板，可输入文件名实时验证。</li>
             <li><strong class="text-[hsl(var(--foreground))]">替换写法</strong>：反向引用用 <code class="rounded bg-[hsl(var(--muted))] px-1">\1</code>（Python 风格），不要写成 $1。</li>
           </ul>
+        </section>
+
+        <!-- ================= 章节：TMDB 智能重命名 ================= -->
+        <div id="tmdb-guide" class="flex scroll-mt-4 items-center gap-2 pt-2">
+          <h2 class="text-lg font-bold text-[hsl(var(--foreground))]">🎬 TMDB 智能重命名</h2>
+          <div class="h-px flex-1 bg-[hsl(var(--border))]" />
+        </div>
+
+        <!-- ===== TMDB 设置总览 ===== -->
+        <section id="tmdb-overview" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🎬 TMDB 设置总览
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('tmdb-overview')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>
+              TMDB（The Movie Database）用于<strong>影视元数据刮削、海报获取和智能重命名</strong>。
+              在「设置 → TMDB 设置」中配置。各参数说明：
+            </p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">API Key</strong>：TMDB 开放平台的密钥，免费注册即可获取。未设置时 TMDB 相关功能（海报、智能重命名、影视发现）不可用。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">语言</strong>：刮削元数据（标题、简介）使用的语言，默认 zh-CN（中文）。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">海报语言</strong>：优先获取的海报语言，默认 zh-CN。无对应语言海报时自动回退英文。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">启用 Guessit 兜底重命名</strong>：当任务关联了 TMDB 但没有配置正则时，用 Guessit 解析文件名并按模板重命名（见下方说明）。关闭后未配正则的文件按原名转存。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">剧集 / 电影重命名模板</strong>：Guessit 兜底重命名使用的文件名模板，支持<a href="#tmdb-variables" class="text-[hsl(var(--primary))] hover:underline">模板变量</a>。</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- ===== TMDB 模板变量表 ===== -->
+        <section id="tmdb-variables" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🧩 TMDB 模板变量表
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('tmdb-variables')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <p class="mb-3 text-sm text-[hsl(var(--muted-foreground))]">
+            在「设置 → TMDB 设置」的<strong>剧集 / 电影重命名模板</strong>中可直接写这些占位符。
+            标题、季号、集号、年份来自 TMDB 元数据；分辨率、编码等标签由 Guessit 从原文件名识别，识别不到时替换为空。
+          </p>
+          <div class="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+            <table class="w-full min-w-[560px] text-sm">
+              <thead class="bg-[hsl(var(--muted))]/60">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">变量</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">含义</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">示例</th>
+                </tr>
+              </thead>
+              <tbody class="text-[hsl(var(--foreground))]">
+                <tr v-for="mv in tmdbVariableDocs" :key="mv.name" class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-mono text-xs font-semibold">{{ mv.name }}</td>
+                  <td class="px-3 py-2">{{ mv.desc }}</td>
+                  <td class="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))]">{{ mv.example }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="mt-3 text-xs text-[hsl(var(--muted-foreground))]">
+            注：模板中若未包含 <code class="rounded bg-[hsl(var(--muted))] px-1">{ext}</code>，系统会自动在末尾补上扩展名。
+          </p>
+        </section>
+
+        <!-- ===== TMDB 模板示例 ===== -->
+        <section id="tmdb-examples" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            📚 TMDB 模板实战示例
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('tmdb-examples')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-4 text-sm">
+            <div v-for="ex in tmdbTemplateExamples" :key="ex.name">
+              <p class="font-medium text-[hsl(var(--foreground))]">{{ ex.name }}</p>
+              <p class="mt-1 font-mono text-xs text-[hsl(var(--muted-foreground))]">模板：{{ ex.tpl }}</p>
+              <p class="mt-0.5 text-xs text-[hsl(var(--muted-foreground))]">结果：<span class="font-mono text-[hsl(var(--foreground))]">{{ ex.result }}</span></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== Guessit 兜底机制 ===== -->
+        <section id="tmdb-guessit" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🔁 Guessit 兜底重命名机制
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('tmdb-guessit')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>Guessit 是一个从文件名中识别剧集信息的库。当满足以下<strong>全部条件</strong>时触发兜底重命名：</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li>任务已关联 TMDB（选择了剧集/电影）；</li>
+              <li>任务<strong>没有配置</strong>匹配正则（pattern）和替换字符串（replace）；</li>
+              <li>「启用 Guessit 兜底重命名」开关开启；</li>
+              <li>文件是视频文件（非视频文件跳过，保持原名）。</li>
+            </ul>
+            <p class="text-[hsl(var(--muted-foreground))]">
+              触发后：Guessit 从原文件名解析季号/集号，<strong>标题优先使用 TMDB 元数据</strong>（保证与媒体库一致），
+              再套用「设置 → TMDB 设置」中的模板生成新文件名。若 TMDB 无法提供季信息且文件名也识别不出季号，
+              会尝试用 TMDB 的季列表映射；仍无法确定时该剧集文件保持原名。
+            </p>
+            <div class="rounded-lg bg-[hsl(var(--muted))]/40 p-3 text-[hsl(var(--muted-foreground))]">
+              💡 优先级：<strong class="text-[hsl(var(--foreground))]">配置了正则 → 按正则重命名</strong>；
+              <strong class="text-[hsl(var(--foreground))]">未配置正则 + 关联 TMDB → Guessit 兜底</strong>；
+              <strong class="text-[hsl(var(--foreground))]">未配置正则 + 未关联 TMDB → 原名转存</strong>。
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= 章节：302 代理 / CAS / STRM ================= -->
+        <div id="dl302-guide" class="flex scroll-mt-4 items-center gap-2 pt-2">
+          <h2 class="text-lg font-bold text-[hsl(var(--foreground))]">🌐 302 代理 / CAS / STRM</h2>
+          <div class="h-px flex-1 bg-[hsl(var(--border))]" />
+        </div>
+
+        <!-- ===== 概念速览 ===== -->
+        <section id="dl302-overview" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🌐 概念速览
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('dl302-overview')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>「设置 → 302 代理」管理 DL302 服务，涉及三个核心概念：</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">302 直连</strong>：播放时不经过服务器中转流量，而是返回一个 302 跳转，让播放器直接从网盘下载，服务器只负责解析出真实下载地址，几乎不占带宽。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">CAS（秒传数据）</strong>：预先下载网盘文件计算哈希，生成 <code class="rounded bg-[hsl(var(--muted))] px-1">.cas</code> 元数据文件并上传回网盘。之后转存同一文件时可用哈希「秒传」，无需真正下载。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">STRM</strong>：生成只包含播放地址的 <code class="rounded bg-[hsl(var(--muted))] px-1">.strm</code> 文本文件，Emby/Jellyfin 等媒体库扫描到后直接按地址播放，无需下载整个文件。</li>
+            </ul>
+            <p class="text-[hsl(var(--muted-foreground))]">
+              302 直连需保留端口 <strong class="text-[hsl(var(--foreground))]">5115 / 9000</strong>（5115 为统一代理端口）。
+              不建议把 5115 直接暴露公网，推荐用反代代理 <code class="rounded bg-[hsl(var(--muted))] px-1">/dl</code> 路径。
+            </p>
+          </div>
+        </section>
+
+        <!-- ===== CAS 参数 ===== -->
+        <section id="cas-settings" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            ⚡ CAS 参数说明
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('cas-settings')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+            <table class="w-full min-w-[560px] text-sm">
+              <thead class="bg-[hsl(var(--muted))]/60">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">参数</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">说明</th>
+                </tr>
+              </thead>
+              <tbody class="text-[hsl(var(--foreground))]">
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">CAS 文件生成目录</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">生成的 .cas 文件统一上传到网盘的该目录（如 /cas），所有驱动账号共用。留空则 CAS 功能不可用。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">CAS 并发 Worker</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">同时处理几个文件的 CAS 生成（1-32），默认 4。与复制任务的并发相互独立。值越大越快，但占用更多带宽和网盘请求配额。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">STRM 扫描路径</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">CAS 任务的扫描目录，<strong>复用各网盘账号配置中的「STRM 扫描路径」</strong>，仅处理目录缓存里缺少 rapid record 的视频文件。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">快速计算（cloud139）</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">移动云盘专属：优先用云端目录列表返回的 SHA256 生成 CAS，省去下载+本地哈希；拿不到哈希时自动回退原流程。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===== STRM 参数 ===== -->
+        <section id="strm-settings" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            📄 STRM 参数说明
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('strm-settings')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+            <table class="w-full min-w-[560px] text-sm">
+              <thead class="bg-[hsl(var(--muted))]/60">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">参数</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">说明</th>
+                </tr>
+              </thead>
+              <tbody class="text-[hsl(var(--foreground))]">
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">开启生成 STRM</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">扫描/缓存巡检完成后自动对账生成 .strm 文件。默认复用各账号的 STRM 扫描路径，为空时回退到缓存路径。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">包含 CAS 文件目录</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">对已配置 STRM 扫描路径的账号，额外扫描 CAS 生成目录，为 .cas 文件补充生成 STRM。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">源优先级</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">视频优先：优先用原始视频文件生成 STRM；CAS 优先：优先用 .cas 文件生成（配合秒传播放）。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">生成模式</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">自动：合并所有账号结果，链接统一指向 /dl/auto；独立：按账号名生成一级目录，链接带 account 参数区分账号。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">STRM 生成目录</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">.strm 文件输出目录（默认 /strm），媒体库需将此目录加入扫描。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">前缀 URL</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">.strm 文件内播放地址的前缀（如 http://192.168.1.10:9978），应为媒体库服务器可访问到本服务的地址。留空时访问时自动回填。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===== 反代参数 ===== -->
+        <section id="proxy-settings" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🔀 反代参数说明
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('proxy-settings')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>「反代设置」用于把 Emby/Jellyfin/飞牛影视等媒体服务的请求代理出去，并在播放时拦截下载请求改为 302 直连。每个反代目标包含：</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">系统类型</strong>：飞牛影视＝响应改写模式；Emby/Jellyfin＝下载接口 302 拦截；通用透传＝纯代理不干预。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">目标地址</strong>：被代理的媒体服务真实地址（如 http://192.168.1.100:8096）。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">监听端口</strong>：本服务为该反代目标开放的新端口，播放器/浏览器访问这个端口。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">路径偏移</strong>：目标服务部署在子路径时填写偏移量（一般为 0）。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">内网网段 (CIDR)</strong>：每行一个网段，客户端 IP 命中内网时直连目标、绕过 302（内网直连通常更快更稳）。所有反代目标共享。</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- ================= 章节：网盘账号 ================= -->
+        <div id="drive-guide" class="flex scroll-mt-4 items-center gap-2 pt-2">
+          <h2 class="text-lg font-bold text-[hsl(var(--foreground))]">☁️ 网盘账号</h2>
+          <div class="h-px flex-1 bg-[hsl(var(--border))]" />
+        </div>
+
+        <!-- ===== 三个路径配置 ===== -->
+        <section id="drive-paths" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            📂 三个路径配置的区别
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('drive-paths')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <p class="mb-3 text-sm text-[hsl(var(--muted-foreground))]">
+            编辑网盘账号时有三个容易混淆的路径配置，它们用途不同，<strong>互不替代</strong>：
+          </p>
+          <div class="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+            <table class="w-full min-w-[640px] text-sm">
+              <thead class="bg-[hsl(var(--muted))]/60">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">配置项</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">用途</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">影响范围</th>
+                </tr>
+              </thead>
+              <tbody class="text-[hsl(var(--foreground))]">
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">缓存路径<br /><span class="text-xs text-[hsl(var(--muted-foreground))]">lsdir_cache_path</span></td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">目录缓存（ls_dir）的扫描根目录，也是<strong>同步任务的默认目标基路径</strong>。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">同步任务、追剧联动、目录浏览、秒传判断。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">STRM 扫描路径<br /><span class="text-xs text-[hsl(var(--muted-foreground))]">strm_scan_path</span></td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">STRM 生成与 CAS 生成的扫描目录，支持多个（逗号分隔）。<strong>同时也是 302 播放的代理基路径</strong>（取第一个）。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">STRM 生成、CAS 生成、302 播放路径解析。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">302_path（旧参数）</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">历史遗留参数，<strong>已废弃</strong>。仅在缓存路径为空时作为回退。新配置请勿使用。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">仅回退兼容。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/40 p-3 text-sm text-amber-600 dark:text-amber-400">
+            ⚠️ 常见误区：STRM 扫描路径的第一项会被用作 302 播放的代理基路径。如果你的同步目标目录（缓存路径）不在 STRM 扫描路径下，
+            302 播放解析时可能把目标路径错误地拼到扫描路径下。建议把<strong>缓存路径包含在 STRM 扫描路径列表中</strong>，或两者保持一致。
+          </div>
+        </section>
+
+        <!-- ================= 章节：缓存管理 ================= -->
+        <div id="cache-guide" class="flex scroll-mt-4 items-center gap-2 pt-2">
+          <h2 class="text-lg font-bold text-[hsl(var(--foreground))]">💾 缓存管理</h2>
+          <div class="h-px flex-1 bg-[hsl(var(--border))]" />
+        </div>
+
+        <!-- ===== 三类缓存 ===== -->
+        <section id="cache-overview" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            💾 三类缓存说明
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('cache-overview')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <p class="mb-3 text-sm text-[hsl(var(--muted-foreground))]">「设置 → 缓存管理」管理三类本地缓存，作用是减少重复请求、加速页面加载：</p>
+          <div class="overflow-x-auto rounded-lg border border-[hsl(var(--border))]">
+            <table class="w-full min-w-[640px] text-sm">
+              <thead class="bg-[hsl(var(--muted))]/60">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">缓存</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">缓存内容</th>
+                  <th class="px-3 py-2 text-left font-medium text-[hsl(var(--muted-foreground))]">可配置项</th>
+                </tr>
+              </thead>
+              <tbody class="text-[hsl(var(--foreground))]">
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">代理图片缓存</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">影视发现的海报/图片经本服务代理下载后的本地磁盘缓存，避免每次浏览都重新拉取。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">TTL、单文件上限、总容量上限；支持「清理过期」「一键清空」。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">分享链接缓存</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">分享链接解析结果（pwd_id/stoken 等）缓存，减少重复解析、规避网盘风控。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">TTL、容量；支持按条目清理。</td>
+                </tr>
+                <tr class="border-t border-[hsl(var(--border))]">
+                  <td class="px-3 py-2 font-medium">TMDB 缓存</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">TMDB 详情（标题、季数、海报等）缓存，供任务统计与追剧信息复用。</td>
+                  <td class="px-3 py-2 text-[hsl(var(--muted-foreground))]">定时刷新、批量刷新、冷数据清理、单条 TTL。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===== TMDB 缓存 ===== -->
+        <section id="tmdb-cache" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🎬 TMDB 缓存与定时刷新
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('tmdb-cache')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>TMDB 缓存页分三个子标签：</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">缓存列表</strong>：查看全部缓存条目，支持按类型/关键词/状态/是否过期筛选；每行可强制刷新、设置 TTL、删除。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">工具</strong>：「刷新任务关联缓存」从任务提取已关联的 TMDB 条目批量刷新；「清理冷数据」删除长期未访问的条目；「快速定位」按 tmdb_id 排查单条缓存状态。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">定时刷新</strong>：按 <a href="#crontab" class="text-[hsl(var(--primary))] hover:underline">crontab</a> 周期性刷新缓存，保持剧集更新状态（如更新星期、下一集播出时间）新鲜。</li>
+            </ul>
+            <p class="text-[hsl(var(--muted-foreground))]">定时刷新参数：</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">crontab / timezone</strong>：刷新周期与时区（默认 0 */6 * * *，Asia/Shanghai）。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">每次最多刷新条目</strong>：单次定时任务最多刷新多少条，避免一次性请求过多被 TMDB 限流。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">仅刷新任务关联条目</strong>：开启后只刷新已被追剧任务关联的条目（推荐），减少无效刷新。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">冷数据保留天数</strong>：超过该天数未访问的条目会在清理时删除。</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- ================= 章节：通知与其他 ================= -->
+        <div id="misc-guide" class="flex scroll-mt-4 items-center gap-2 pt-2">
+          <h2 class="text-lg font-bold text-[hsl(var(--foreground))]">🔔 通知与其他</h2>
+          <div class="h-px flex-1 bg-[hsl(var(--border))]" />
+        </div>
+
+        <!-- ===== 通知渠道 ===== -->
+        <section id="notifications" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🔔 通知渠道
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('notifications')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <div class="space-y-3 text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            <p>「设置 → 通知配置」支持 18 种通知渠道。每个渠道<strong>填好必填项 → 打开启用开关 → 点「测试」验证</strong>即可。</p>
+            <ul class="list-disc space-y-1 pl-5 text-[hsl(var(--muted-foreground))]">
+              <li><strong class="text-[hsl(var(--foreground))]">手机推送</strong>：Bark（iOS）、PushPlus、Server酱、PushDeer、PushMe、WxPusher。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">IM 机器人</strong>：Telegram、钉钉、飞书、企业微信（机器人/应用）、go-cqhttp（QQ）、DoDo、微加机器人。</li>
+              <li><strong class="text-[hsl(var(--foreground))]">自建/通用</strong>：SMTP 邮件、Gotify、Ntfy、自定义 Webhook。</li>
+            </ul>
+            <p class="text-[hsl(var(--muted-foreground))]">
+              自定义 Webhook 的 URL 和 Body 支持 <code class="rounded bg-[hsl(var(--muted))] px-1">$title</code> /
+              <code class="rounded bg-[hsl(var(--muted))] px-1">$content</code> 占位符，发送时自动替换为通知标题和正文。
+              追剧任务、同步任务完成或失败时会向所有已启用渠道推送。
+            </p>
+          </div>
+        </section>
+
+        <!-- ===== 转存设置 ===== -->
+        <section id="transfer-settings" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🔀 转存设置
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('transfer-settings')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <ul class="list-disc space-y-2 pl-5 text-sm text-[hsl(var(--muted-foreground))]">
+            <li><strong class="text-[hsl(var(--foreground))]">跳过已转存历史</strong>：开启后转存时跳过历史记录中已成功转存过的文件，避免重复转存。适合分享链接长期有效的追剧场景。</li>
+            <li><strong class="text-[hsl(var(--foreground))]">下载模式</strong>：CAS 复制任务的下载方式。流式（0）＝边下边传，不占本地磁盘；下载（1）＝先完整下载到本地再上传，更稳定但占磁盘。网络不稳定导致流式失败时可切换为下载模式。</li>
+          </ul>
+        </section>
+
+        <!-- ===== 资源搜索 ===== -->
+        <section id="resource-search" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🔎 资源搜索
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('resource-search')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <ul class="list-disc space-y-2 pl-5 text-sm text-[hsl(var(--muted-foreground))]">
+            <li><strong class="text-[hsl(var(--foreground))]">网络搜索 (net)</strong>：内置聚合网络资源搜索，开箱即用，仅需启用。</li>
+            <li><strong class="text-[hsl(var(--foreground))]">CloudSaver</strong>：对接自建 CloudSaver 服务，需填服务器地址、用户名、密码。</li>
+            <li><strong class="text-[hsl(var(--foreground))]">盘搜 (pansou)</strong>：对接 pansou 搜索服务，需填服务器地址。</li>
+          </ul>
+          <p class="mt-2 text-sm text-[hsl(var(--muted-foreground))]">启用后在「资源搜索」页面即可聚合检索，搜索结果可一键创建追剧任务。</p>
+        </section>
+
+        <!-- ===== OpenList ===== -->
+        <section id="openlist" class="scroll-mt-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+          <h2 class="group mb-3 flex items-center gap-2 text-base font-semibold text-[hsl(var(--foreground))]">
+            🗂️ OpenList
+            <button class="opacity-0 transition-opacity group-hover:opacity-100" title="复制本节链接" @click="copyAnchor('openlist')">
+              <LinkIcon class="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </button>
+          </h2>
+          <p class="text-sm leading-relaxed text-[hsl(var(--muted-foreground))]">
+            OpenList（原 AList）是聚合网盘的目录列表服务。配置其 URL 和 Token 后，同步任务可以把文件同步到 OpenList 挂载的存储。
+            URL 形如 <code class="rounded bg-[hsl(var(--muted))] px-1">http://localhost:5245</code>，Token 在 OpenList 后台「用户」中获取。
+          </p>
         </section>
 
         <!-- ================= 章节：定时任务 ================= -->
