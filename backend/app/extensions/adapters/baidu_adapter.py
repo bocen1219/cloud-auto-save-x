@@ -1300,10 +1300,19 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                 passcode = match_hash.group(1)
 
         # 提取子目录 ID
+        # 格式1: hash 路由 #/list/share/<fs_id>（新版 Web 端进入子目录）
         if "#/list/share/" in url:
             raw_fid = url.split("#/list/share/")[-1]
             match_fid = re.match(r"(\w+)", raw_fid)
             if match_fid:
                 pdir_fid = match_fid.group(1)
+
+        # 格式2: 查询参数 pid=<fs_id>（百度网盘目录解析，pid 为目录 fs_id）
+        # 例: https://pan.baidu.com/s/1xxx?pid=123456&uk=xxx&shareid=xxx
+        # get_detail 对数字型 pdir_fid 走 BFS 解析，与 pid 语义一致。
+        if pdir_fid == "/":
+            match_pid = re.search(r"[?&]pid=(\d+)", url)
+            if match_pid:
+                pdir_fid = match_pid.group(1)
 
         return pwd_id, passcode, pdir_fid, paths

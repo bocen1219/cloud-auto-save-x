@@ -810,16 +810,7 @@ function pickCurrentShareFolder() {
     state.startfid = ''
     // Build a new shareurl with pdir_fid appended
     const baseUrl = state.shareurl.trim()
-    let nextShareurl = baseUrl
-    try {
-      const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https://x.com/${baseUrl}`)
-      url.searchParams.set('fid', current.pdir_fid)
-      nextShareurl = baseUrl.startsWith('http') ? url.toString() : `${url.pathname.slice(1)}${url.search}`
-    } catch {
-      // Fallback: just append ?fid=...
-      const sep = baseUrl.includes('?') ? '&' : '?'
-      nextShareurl = `${baseUrl}${sep}fid=${current.pdir_fid}`
-    }
+    const nextShareurl = getShareurl(baseUrl, { fid: current.pdir_fid, name: current.name })
     if (nextShareurl !== baseUrl) {
       skipNextShareurlAutoLocate.value = true
       state.shareurl = nextShareurl

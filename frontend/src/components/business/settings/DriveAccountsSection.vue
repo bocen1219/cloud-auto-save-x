@@ -12,7 +12,6 @@ import {
   AlertDialogFooter,
   AlertDialogTitle,
   AlertDialogDescription,
-  AlertDialogAction,
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog'
 import {
@@ -818,13 +817,13 @@ async function saveScheduler() {
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel @click="deleteDialogOpen = false; deletingAccount = null">取消</AlertDialogCancel>
-          <AlertDialogAction
-            class="bg-[hsl(var(--destructive))] text-[hsl(var(--destructive-foreground))] hover:bg-[hsl(var(--destructive))]/90"
+          <Button
+            variant="destructive"
             :disabled="deleting"
             @click="confirmDelete"
           >
             {{ deleting ? '删除中...' : '删除' }}
-          </AlertDialogAction>
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
