@@ -782,6 +782,28 @@ const shareurlHasFid = computed(() => {
 })
 
 function pickCurrentShareFolder() {
+  // 根目录：剥掉 shareurl 中的子目录定位（#/list/share/xxx、fid= 参数）
+  if (previewForcedRoot.value && previewDirStack.value.length === 0) {
+    const baseUrl = state.shareurl.trim()
+    let nextShareurl = baseUrl
+    try {
+      const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https://x.com/${baseUrl}`)
+      url.searchParams.delete('fid')
+      url.hash = ''
+      nextShareurl = baseUrl.startsWith('http') ? url.toString() : `${url.pathname.slice(1)}${url.search}`
+    } catch {
+      nextShareurl = baseUrl.replace(/#\/list\/share\/[^?]*/g, '').replace(/([?&])fid=[^&]*&?/g, '$1').replace(/[?&]$/, '')
+    }
+    if (nextShareurl !== baseUrl) {
+      skipNextShareurlAutoLocate.value = true
+      state.shareurl = nextShareurl
+    }
+    state.startfid = ''
+    previewHint.value = '已使用分享根目录'
+    toast.success('已选择分享根目录')
+    showPreviewModal.value = false
+    return
+  }
   const current = previewDirStack.value.at(-1)
   if (current) {
     // Update startfid to null and record the pdir_fid in shareurl query
@@ -1242,7 +1264,7 @@ function getTmdbPoster(item: TMDBBrief): string {
           <span v-else-if="previewForcedRoot" class="text-xs text-[hsl(var(--muted-foreground))]">分享根目录</span>
           <span v-else-if="shareurlHasFid" class="text-xs text-[hsl(var(--muted-foreground))]">当前位于指定子目录</span>
           <div class="flex-1" />
-          <Button size="sm" variant="default" @click="pickCurrentShareFolder" :disabled="!previewDirStack.length">
+          <Button size="sm" variant="default" @click="pickCurrentShareFolder" :disabled="!previewDirStack.length && !previewForcedRoot">
             使用当前文件夹
           </Button>
         </div>
