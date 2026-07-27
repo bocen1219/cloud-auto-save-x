@@ -55,10 +55,18 @@ const mode = ref<'one_way' | 'two_way'>('one_way')
 const overwrite = ref(false)
 const deleteExtras = ref(false)
 const forceRefresh = ref(false)
+const autoWash = ref(true)
 const concurrency = ref(4)
 const requestIntervalSeconds = ref(0)
 const openlistCopyBatchSize = ref(200)
 const dramaTaskUids = ref<string[]>([])
+
+const targetDriveType = computed(() => {
+  if (targetType.value !== 'netdisk' || targetAccountId.value == null) return ''
+  const acc = availableAccounts.value.find((a) => a.id === targetAccountId.value)
+  return acc?.drive_type ?? ''
+})
+const showAutoWash = computed(() => targetDriveType.value === 'cloud139')
 
 function resetForm() {
   name.value = ''
@@ -73,6 +81,7 @@ function resetForm() {
   overwrite.value = false
   deleteExtras.value = false
   forceRefresh.value = false
+  autoWash.value = true
   concurrency.value = 4
   requestIntervalSeconds.value = 0
   openlistCopyBatchSize.value = 200
@@ -92,6 +101,7 @@ function fillFromTask(task: SyncTaskItem) {
   overwrite.value = task.strategy.overwrite
   deleteExtras.value = task.strategy.one_way_delete_extras
   forceRefresh.value = task.strategy.force_refresh
+  autoWash.value = task.strategy.auto_wash ?? true
   concurrency.value = task.strategy.concurrency
   requestIntervalSeconds.value = task.strategy.request_interval_seconds
   openlistCopyBatchSize.value = task.strategy.openlist_copy_batch_size
@@ -133,6 +143,7 @@ function buildPayload() {
       concurrency: concurrency.value,
       request_interval_seconds: requestIntervalSeconds.value,
       openlist_copy_batch_size: openlistCopyBatchSize.value,
+      auto_wash: autoWash.value,
     },
     drama_task_uids: dramaTaskUids.value,
   }
@@ -528,6 +539,14 @@ function closePicker() {
               <label class="flex items-center gap-3 cursor-pointer">
                 <input type="checkbox" v-model="forceRefresh" class="h-4 w-4 rounded border-[hsl(var(--border))]" />
                 <span class="text-sm text-[hsl(var(--foreground))]">强制刷新</span>
+              </label>
+
+              <label v-if="showAutoWash" class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" v-model="autoWash" class="h-4 w-4 mt-0.5 rounded border-[hsl(var(--border))]" />
+                <span class="text-sm text-[hsl(var(--foreground))]">
+                  自动洗码
+                  <span class="block text-xs text-[hsl(var(--muted-foreground))]">仅移动云盘目标生效：上传后检测到文件被和谐时，自动洗码并上传。</span>
+                </span>
               </label>
 
               <label class="flex items-center gap-3 cursor-pointer">

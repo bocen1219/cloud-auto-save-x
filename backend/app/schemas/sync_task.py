@@ -25,6 +25,8 @@ class SyncStrategy(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=32)
     request_interval_seconds: float = Field(default=0.0, ge=0.0, le=5.0)
     openlist_copy_batch_size: int = Field(default=200, ge=1, le=5000)
+    # 自动洗码：仅当目标网盘为移动云盘(cloud139)时生效。上传后检测文件是否被和谐，
+    auto_wash: bool = True
 
 
 class SyncTaskBase(BaseModel):

@@ -52,6 +52,7 @@ class Dl302Strategy:
     overwrite: bool
     force_refresh: bool
     concurrency: int
+    auto_wash: bool = True
 
 
 class SyncCancelled(Exception):
@@ -269,6 +270,7 @@ class Dl302SyncExecutor:
                 dst_path=target.path,
                 conflict_policy=conflict_policy,
                 concurrency=int(getattr(strategy, "concurrency", 4) or 4),
+                auto_wash=bool(getattr(strategy, "auto_wash", True)),
             )
             dl302_task_id = str(getattr(submit_resp, "task_id", "") or "").strip()
             if not dl302_task_id:
@@ -525,6 +527,7 @@ class Dl302SyncExecutor:
             overwrite=bool(base.get("overwrite", False)),
             force_refresh=bool(base.get("force_refresh", False)),
             concurrency=max(1, min(32, int(base.get("concurrency", 4) or 4))),
+            auto_wash=bool(base.get("auto_wash", True)),
         )
 
     def _refresh_netdisk_endpoints_if_needed(
@@ -807,6 +810,11 @@ class Dl302SyncExecutor:
             "rapid_upload": "秒传",
             "rapid_fallback": "秒传回退",
             "export_rapid": "生成秒传",
+            "censor_check": "和谐检测",
+            "wash_download": "洗码回源",
+            "wash_copy": "洗码复制",
+            "washing": "洗码",
+            "wash_upload": "洗码重传",
             "done": "完成",
         }.get(normalized, normalized)
 
@@ -944,6 +952,7 @@ class Dl302SyncExecutor:
                     "overwrite": bool(strategy.overwrite),
                     "force_refresh": bool(strategy.force_refresh),
                     "concurrency": int(strategy.concurrency),
+                    "auto_wash": bool(strategy.auto_wash),
                 },
                 "addition": addition,
                 "execution_id": int(execution_id),

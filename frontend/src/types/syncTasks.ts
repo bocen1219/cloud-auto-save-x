@@ -17,6 +17,7 @@ export type SyncStrategy = {
   concurrency: number
   request_interval_seconds: number
   openlist_copy_batch_size: number
+  auto_wash?: boolean
 }
 
 export type SyncExecutionItem = {
