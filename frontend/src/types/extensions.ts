@@ -18,6 +18,15 @@ export type DriveTypeItem = {
   config_fields: ConfigFieldItem[]
 }
 
+export type Cloud189FamilyItem = {
+  family_id: string
+  remark_name: string
+  type?: number | null
+  user_role?: number | null
+  count?: number | null
+  create_time?: string
+}
+
 export type DriveAccountProfile = {
   drive_type?: string
   drive_name?: string

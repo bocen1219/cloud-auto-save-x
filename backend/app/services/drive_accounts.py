@@ -16,6 +16,7 @@ from app.extensions.adapters.drive_auth import DriveAuthRequired
 from app.extensions.runtime.adapter_registry import AdapterRegistry
 from app.models.drive_account import DriveAccount
 from app.services.drive_account_auth_sessions import create_auth_session
+from app.thirdparty.dl302_grpc_client import list_cloud189_families as list_cloud189_families_via_dl302
 
 BEIJING_TZ = ZoneInfo('Asia/Shanghai')
 
@@ -168,6 +169,23 @@ def sign_in_drive_account(db: Session, account_id: int) -> dict[str, Any]:
             wdb.commit()
         db.expire_all()
     return result
+
+
+def list_cloud189_families(db: Session, account_id: int) -> list[dict[str, Any]]:
+    """获取天翼云盘账号的家庭云列表，供前端 family_id 下拉选择。
+
+    家庭云列表需要 dl302 侧的 SessionKey+Signature 签名认证（web cookie 方式会 400），
+    故通过 gRPC 交由 dl302 完成（那里有完整的签名计算与家庭会话）。
+    """
+    account = get_drive_account(db, account_id)
+    if str(getattr(account, "drive_type", "") or "").strip().lower() != "cloud189":
+        raise bad_request("DRIVE_TYPE_INVALID", "仅天翼云盘账号支持获取家庭云列表")
+    try:
+        return list_cloud189_families_via_dl302(account=str(account.name or ""))
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise bad_request("CLOUD189_FAMILY_LIST_FAILED", f"获取家庭云列表失败: {exc}")
 
 
 def _rollback_clean_session_transaction(db: Session) -> None:

@@ -1,9 +1,16 @@
 import { http } from '@/api/http'
-import type { DriveAccountItem, DriveAccountLsdirCacheRefreshResult, DriveTypeItem, PluginItem } from '@/types/extensions'
+import type { Cloud189FamilyItem, DriveAccountItem, DriveAccountLsdirCacheRefreshResult, DriveTypeItem, PluginItem } from '@/types/extensions'
 
 export async function fetchDriveAccounts() {
   const { data } = await http.get<DriveAccountItem[]>('/drive-accounts')
   return data
+}
+
+export async function fetchCloud189Families(accountId: number) {
+  const { data } = await http.get<{ items: Cloud189FamilyItem[] }>(`/drive-accounts/${accountId}/cloud189/families`, {
+    headers: { 'X-Silent-Toast': '1' },
+  })
+  return data.items || []
 }
 
 export async function fetchDriveTypes() {

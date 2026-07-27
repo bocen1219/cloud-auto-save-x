@@ -3,10 +3,7 @@
 import grpc
 import warnings
 
-try:
-    from . import dl302_pb2 as dl302__pb2
-except ImportError:  # pragma: no cover
-    import dl302_pb2 as dl302__pb2
+from . import dl302_pb2 as dl302__pb2
 
 GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
@@ -112,6 +109,11 @@ class Dl302ServiceStub:
                 request_serializer=dl302__pb2.GetCopyTaskRequest.SerializeToString,
                 response_deserializer=dl302__pb2.CopyTaskResponse.FromString,
                 _registered_method=True)
+        self.ListCloud189Families = channel.unary_unary(
+                '/dl302.v1.Dl302Service/ListCloud189Families',
+                request_serializer=dl302__pb2.ListCloud189FamiliesRequest.SerializeToString,
+                response_deserializer=dl302__pb2.ListCloud189FamiliesResponse.FromString,
+                _registered_method=True)
 
 
 class Dl302ServiceServicer:
@@ -207,6 +209,12 @@ class Dl302ServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListCloud189Families(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_Dl302ServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -284,6 +292,11 @@ def add_Dl302ServiceServicer_to_server(servicer, server):
                     servicer.CancelCopyTask,
                     request_deserializer=dl302__pb2.GetCopyTaskRequest.FromString,
                     response_serializer=dl302__pb2.CopyTaskResponse.SerializeToString,
+            ),
+            'ListCloud189Families': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListCloud189Families,
+                    request_deserializer=dl302__pb2.ListCloud189FamiliesRequest.FromString,
+                    response_serializer=dl302__pb2.ListCloud189FamiliesResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -691,6 +704,33 @@ class Dl302Service:
             '/dl302.v1.Dl302Service/CancelCopyTask',
             dl302__pb2.GetCopyTaskRequest.SerializeToString,
             dl302__pb2.CopyTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListCloud189Families(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dl302.v1.Dl302Service/ListCloud189Families',
+            dl302__pb2.ListCloud189FamiliesRequest.SerializeToString,
+            dl302__pb2.ListCloud189FamiliesResponse.FromString,
             options,
             channel_credentials,
             insecure,

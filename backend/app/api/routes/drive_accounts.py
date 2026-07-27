@@ -24,6 +24,7 @@ from app.services.drive_accounts import (
     create_drive_account,
     delete_drive_account,
     get_drive_account,
+    list_cloud189_families,
     list_drive_accounts,
     merge_runtime_account_config,
     normalize_api_datetime,
@@ -396,6 +397,12 @@ def post_account_probe(request: Request, account_id: int, current: CurrentUser =
     db.refresh(account)
     _reload_dl302_if_needed(account.drive_type)
     return _out(account, db=db)
+
+
+@router.get('/{account_id}/cloud189/families', dependencies=[Depends(require_permissions(DRIVE_ACCOUNT_READ))])
+def get_account_cloud189_families(account_id: int, db: Session = Depends(get_db)):
+    """天翼云盘家庭云列表：展示 remark_name，保存 family_id。"""
+    return {'items': list_cloud189_families(db, account_id)}
 
 
 @router.post('/{account_id}/auth/start', response_model=DriveAccountOut, dependencies=[Depends(require_permissions(DRIVE_ACCOUNT_WRITE))])

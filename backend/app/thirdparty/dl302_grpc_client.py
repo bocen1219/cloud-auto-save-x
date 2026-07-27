@@ -192,3 +192,19 @@ def list_copy_task_items(*, task_id: str, timeout_seconds: float = 25.0):
 def cancel_copy_task(*, task_id: str, timeout_seconds: float = 10.0):
     request = dl302_pb2.GetCopyTaskRequest(task_id=str(task_id or ""))
     return _call_dl302_rpc("CancelCopyTask", request, timeout_seconds=timeout_seconds, fallback="cancel copy task failed", retries=1)
+
+
+def list_cloud189_families(*, account: str, timeout_seconds: float = 20.0) -> list[dict]:
+    """获取天翼云盘账号的家庭云列表（展示 remark_name，保存 family_id）。"""
+    request = dl302_pb2.ListCloud189FamiliesRequest(account=str(account or ""))
+    resp = _call_dl302_rpc("ListCloud189Families", request, timeout_seconds=timeout_seconds, fallback="list cloud189 families failed", retries=1)
+    out: list[dict] = []
+    for item in getattr(resp, "families", []) or []:
+        family_id = str(getattr(item, "family_id", "") or "").strip()
+        if not family_id:
+            continue
+        out.append({
+            "family_id": family_id,
+            "remark_name": str(getattr(item, "remark_name", "") or "").strip() or family_id,
+        })
+    return out

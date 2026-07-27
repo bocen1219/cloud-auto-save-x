@@ -2,8 +2,9 @@
 import { computed, watch, reactive, ref } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Eye, EyeOff, X, BookOpen } from 'lucide-vue-next'
-import type { ConfigFieldItem, DriveAccountItem, DriveTypeItem } from '@/types/extensions'
+import { Eye, EyeOff, X, BookOpen, RefreshCw } from 'lucide-vue-next'
+import { fetchCloud189Families } from '@/api/extensions'
+import type { Cloud189FamilyItem, ConfigFieldItem, DriveAccountItem, DriveTypeItem } from '@/types/extensions'
 
 interface Props {
   open: boolean
@@ -50,6 +51,40 @@ function isPathField(key: string): boolean {
   return PATH_FIELD_KEYS.has(String(key || '').trim())
 }
 
+// cloud189 家庭云 ID：编辑态从接口拉取列表下拉选择（展示 remarkName，保存 familyId）
+const isCloud189Drive = computed(() => String(state.drive_type || '').trim().toLowerCase() === 'cloud189')
+const familyOptions = ref<Cloud189FamilyItem[]>([])
+const familyLoading = ref(false)
+const familyError = ref('')
+const familyLoadedAccountId = ref<number | null>(null)
+
+function isFamilyField(key: string): boolean {
+  return isCloud189Drive.value && String(key || '').trim() === 'family_id'
+}
+
+// 当前已保存的 family_id 不在拉取到的列表里时，额外补一个选项避免选中态丢失
+const currentFamilyIdMissing = computed(() => {
+  const current = String(state.configData?.family_id || '').trim()
+  if (!current) return ''
+  return familyOptions.value.some((f) => String(f.family_id) === current) ? '' : current
+})
+
+async function loadFamilyOptions(force = false) {
+  const accountId = props.editAccount?.id
+  if (!accountId || familyLoading.value) return
+  if (!force && familyLoadedAccountId.value === accountId) return
+  familyLoading.value = true
+  familyError.value = ''
+  try {
+    familyOptions.value = await fetchCloud189Families(accountId)
+    familyLoadedAccountId.value = accountId
+  } catch (e: any) {
+    familyError.value = e?.response?.data?.message || e?.message || '家庭云列表获取失败'
+  } finally {
+    familyLoading.value = false
+  }
+}
+
 function cloneConfig<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? {}))
 }
@@ -93,6 +128,13 @@ watch(
   ([visible]) => {
     if (!visible) return
     syncState()
+    if (props.editAccount?.id && String(props.editAccount.drive_type || '').toLowerCase() === 'cloud189') {
+      loadFamilyOptions()
+    } else {
+      familyOptions.value = []
+      familyError.value = ''
+      familyLoadedAccountId.value = null
+    }
   },
   { immediate: true, deep: true },
 )
@@ -268,6 +310,43 @@ function handleSubmit() {
                   :rows="field.secret ? 4 : 3"
                   class="flex w-full rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--background))] px-3 py-2 text-sm text-[hsl(var(--foreground))] ring-offset-[hsl(var(--background))] placeholder:text-[hsl(var(--muted-foreground))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
                 />
+
+                <!-- cloud189 家庭云 ID：下拉选择（展示 remarkName，保存 familyId） -->
+                <div v-else-if="isFamilyField(field.key)" class="space-y-1.5">
+                  <div v-if="isEditing" class="flex items-center gap-2">
+                    <select
+                      v-model="state.configData[field.key]"
+                      :disabled="familyLoading"
+                      class="flex h-10 w-full rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--background))] px-3 py-2 text-sm text-[hsl(var(--foreground))] ring-offset-[hsl(var(--background))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">不使用家庭云</option>
+                      <option v-for="f in familyOptions" :key="f.family_id" :value="String(f.family_id)">
+                        {{ f.remark_name || f.family_id }}
+                      </option>
+                      <option v-if="currentFamilyIdMissing" :value="currentFamilyIdMissing">
+                        {{ currentFamilyIdMissing }}（当前已保存）
+                      </option>
+                    </select>
+                    <button
+                      type="button"
+                      class="rounded-md border border-[hsl(var(--input))] p-2.5 text-[hsl(var(--muted-foreground))] transition-colors hover:text-[hsl(var(--foreground))] disabled:cursor-not-allowed disabled:opacity-50"
+                      title="重新获取家庭云列表"
+                      :disabled="familyLoading"
+                      @click="loadFamilyOptions(true)"
+                    >
+                      <RefreshCw class="h-4 w-4" :class="familyLoading ? 'animate-spin' : ''" />
+                    </button>
+                  </div>
+                  <Input
+                    v-else
+                    v-model="state.configData[field.key]"
+                    :placeholder="field.placeholder || '保存账号并登录后可下拉选择'"
+                  />
+                  <p v-if="familyError" class="text-xs text-[hsl(var(--destructive))]">{{ familyError }}</p>
+                  <p v-else-if="isEditing && !familyLoading && !familyOptions.length" class="text-xs text-[hsl(var(--muted-foreground))]">
+                    未获取到家庭云，可点右侧按钮重试（需账号已登录）
+                  </p>
+                </div>
 
                 <!-- Password / Text -->
                 <div v-else class="relative">
