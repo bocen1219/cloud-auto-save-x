@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { LogIn, CloudCog, Eye, EyeOff } from 'lucide-vue-next'
+import { LogIn, Eye, EyeOff } from 'lucide-vue-next'
 
 import { useAuthStore } from '@/stores/auth'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
@@ -48,12 +48,11 @@ async function handleLogin() {
     <div class="w-full max-w-sm">
       <!-- Logo & Title -->
       <div class="mb-8 text-center">
-        <div
-          class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl"
-          style="background: hsl(var(--primary) / 0.1)"
-        >
-          <CloudCog class="h-8 w-8" style="color: hsl(var(--primary))" />
-        </div>
+        <img
+          src="/icon-512x512.png"
+          alt="Cloud Auto Save X"
+          class="mx-auto mb-4 h-16 w-16 rounded-2xl"
+        />
         <h1 class="text-2xl font-bold tracking-tight" style="color: hsl(var(--foreground))">
           Cloud Auto Save X
         </h1>

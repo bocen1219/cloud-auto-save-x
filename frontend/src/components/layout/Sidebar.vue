@@ -160,9 +160,7 @@ async function handleLogout() {
     <!-- Logo / App name -->
     <div v-if="!hideHeader" class="flex h-14 items-center justify-between px-4">
       <div class="flex items-center gap-2 overflow-hidden">
-        <div class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--primary))] text-sm font-bold text-[hsl(var(--primary-foreground))]">
-          C
-        </div>
+        <img src="/icon-192x192.png" alt="CAS-X" class="h-8 w-8 flex-shrink-0 rounded-lg" />
         <span
           v-if="!collapsed"
           class="whitespace-nowrap text-sm font-semibold text-[hsl(var(--foreground))]"

@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  CloudCog, UserPlus, HardDrive, PartyPopper,
+  UserPlus, HardDrive, PartyPopper,
   ChevronRight, Check, SkipForward, Eye, EyeOff,
 } from 'lucide-vue-next'
 
@@ -197,12 +197,11 @@ onMounted(async () => {
     <div class="w-full max-w-lg">
       <!-- Logo -->
       <div class="mb-6 text-center">
-        <div
-          class="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl"
-          style="background: hsl(var(--primary) / 0.1)"
-        >
-          <CloudCog class="h-7 w-7" style="color: hsl(var(--primary))" />
-        </div>
+        <img
+          src="/icon-512x512.png"
+          alt="Cloud Auto Save X"
+          class="mx-auto mb-3 h-14 w-14 rounded-2xl"
+        />
         <h1 class="text-xl font-bold tracking-tight" style="color: hsl(var(--foreground))">
           Cloud Auto Save X
         </h1>
