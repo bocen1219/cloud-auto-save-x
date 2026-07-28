@@ -335,31 +335,43 @@ def run_cas_strm_stage(
     source: str,
     log: ExecutionLog,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    from app.services.dl302_settings import get_or_create_dl302_setting, load_dl302_config
+
     cas_tasks: list[dict[str, Any]] = []
+
+    # 检查是否配置了 CAS 文件生成目录，未配置则跳过 CAS 增量生成
+    with SessionLocal() as db:
+        setting = get_or_create_dl302_setting(db)
+        pipeline_config = load_dl302_config(setting)
+    cas_root_dir_configured = bool(str(pipeline_config.get("cas_root_dir") or "").strip())
+
     log.set_stage("linked_cas_delta")
     log.section("增量 CAS 生成")
-    for account_id, payload in sorted(delta_by_account.items(), key=lambda it: it[0]):
-        dir_paths = sorted(payload.get("dir_paths") or set())
-        file_paths = sorted(payload.get("file_paths") or set())
-        with SessionLocal() as db:
-            try:
-                task = submit_dl302_cas_task_delta(
-                    int(account_id),
-                    db,
-                    base_path=cas_base_path_by_account.get(account_id),
-                    dir_paths=dir_paths,
-                    file_paths=file_paths,
-                )
-                db.commit()
-                cas_tasks.append(task)
-                log.line(
-                    f"OK: account_id={account_id} task_id={str(task.get('task_id') or '')} "
-                    f"total={int(task.get('total_items') or 0)} skipped={int(task.get('skipped_items') or 0)}"
-                )
-            except Exception as exc:
-                db.rollback()
-                msg = str(getattr(exc, "message", None) or str(exc) or type(exc).__name__).strip()
-                log.line(f"WARN: account_id={account_id} CAS 增量提交失败 err={msg}")
+    if not cas_root_dir_configured:
+        log.line("SKIP: 未配置 CAS 文件生成目录，跳过 CAS 增量生成")
+    else:
+        for account_id, payload in sorted(delta_by_account.items(), key=lambda it: it[0]):
+            dir_paths = sorted(payload.get("dir_paths") or set())
+            file_paths = sorted(payload.get("file_paths") or set())
+            with SessionLocal() as db:
+                try:
+                    task = submit_dl302_cas_task_delta(
+                        int(account_id),
+                        db,
+                        base_path=cas_base_path_by_account.get(account_id),
+                        dir_paths=dir_paths,
+                        file_paths=file_paths,
+                    )
+                    db.commit()
+                    cas_tasks.append(task)
+                    log.line(
+                        f"OK: account_id={account_id} task_id={str(task.get('task_id') or '')} "
+                        f"total={int(task.get('total_items') or 0)} skipped={int(task.get('skipped_items') or 0)}"
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    msg = str(getattr(exc, "message", None) or str(exc) or type(exc).__name__).strip()
+                    log.line(f"WARN: account_id={account_id} CAS 增量提交失败 err={msg}")
 
     log.set_stage("linked_strm_rebuild")
     log.section("STRM 重建（本地）")

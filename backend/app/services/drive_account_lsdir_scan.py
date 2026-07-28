@@ -862,6 +862,8 @@ def _walk_account_tree(*, account_id: int, drive_type: str, adapter, lsdir_scope
         target_specs.append(TargetPathSpec(full_path=static_base_path, recursive=True, is_static=True))
     if not target_specs:
         return ScanStats()
+    # 普通缓存刷新时一并刷新 CAS 文件生成目录（未配置 cas_root_dir 时自动跳过）
+    target_specs = _append_cas_root_dir_target_paths(target_specs)
     return _refresh_account_paths(
         account_id=int(account_id),
         drive_type=str(drive_type or ""),
