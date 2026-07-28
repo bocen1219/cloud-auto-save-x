@@ -39,6 +39,28 @@ export type DriveAccountProfile = {
   raw?: Record<string, any> | null
 }
 
+export type DriveAccountLsdirCacheStatus = {
+  account_id: number
+  drive_type?: string
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'interrupted' | string
+  kind?: string
+  source?: string
+  savepath?: string
+  target_dirs?: number
+  queued_at?: string | null
+  started_at?: string | null
+  updated_at?: string | null
+  finished_at?: string | null
+  scanned_dirs?: number
+  cached_items?: number
+  current_path?: string
+  pending_dirs?: number
+  duration_ms?: number
+  waiting?: boolean
+  pending_count?: number
+  last_error?: string | null
+}
+
 export type DriveAccountItem = {
   id: number
   name: string
@@ -60,6 +82,7 @@ export type DriveAccountItem = {
   lsdir_cache_base_path?: string | null
   lsdir_cache_file_total?: number
   lsdir_cache_updated_at?: string | null
+  lsdir_cache_refresh?: DriveAccountLsdirCacheStatus | null
   created_at: string
   updated_at: string
 }
@@ -73,6 +96,7 @@ export type DriveAccountLsdirCacheRefreshResult = {
   static_requested?: boolean
   static_queued?: boolean
   static_skipped_reason?: string | null
+  refresh_status?: DriveAccountLsdirCacheStatus | null
 }
 
 export type DriveAccountProbeScheduler = {

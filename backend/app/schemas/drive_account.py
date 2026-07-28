@@ -33,6 +33,32 @@ class DriveAccountStatusIn(BaseModel):
     enabled: bool
 
 
+class DriveAccountLsdirCacheStatusOut(BaseModel):
+    account_id: int
+    drive_type: str = ""
+    status: str = "idle"
+    kind: str = ""
+    source: str = ""
+    savepath: str = ""
+    target_dirs: int = 0
+    queued_at: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    finished_at: str | None = None
+    scanned_dirs: int = 0
+    cached_items: int = 0
+    current_path: str = ""
+    pending_dirs: int = 0
+    duration_ms: int = 0
+    waiting: bool = False
+    pending_count: int = 0
+    last_error: str | None = None
+
+
+class DriveAccountLsdirCacheStatusListOut(BaseModel):
+    items: list[DriveAccountLsdirCacheStatusOut] = []
+
+
 class DriveAccountOut(BaseModel):
     id: int
     name: str
@@ -54,6 +80,7 @@ class DriveAccountOut(BaseModel):
     lsdir_cache_base_path: str | None = None
     lsdir_cache_file_total: int = 0
     lsdir_cache_updated_at: datetime | None = None
+    lsdir_cache_refresh: DriveAccountLsdirCacheStatusOut | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -76,6 +103,7 @@ class DriveAccountLsdirCacheRefreshOut(BaseModel):
     static_requested: bool = False
     static_queued: bool = False
     static_skipped_reason: str | None = None
+    refresh_status: DriveAccountLsdirCacheStatusOut | None = None
 
 
 class DriveAccountLsdirCacheRefreshIn(BaseModel):

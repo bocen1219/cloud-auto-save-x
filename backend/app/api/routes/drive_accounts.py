@@ -8,7 +8,7 @@ from app.core.errors import ApiError, bad_request, not_found
 from app.core.deps import CurrentUser, get_current_user, require_permissions
 from app.core.permissions import DRIVE_ACCOUNT_READ, DRIVE_ACCOUNT_WRITE
 from app.db.session import get_db
-from app.schemas.drive_account import DriveAccountCreateIn, DriveAccountLsdirCacheRefreshIn, DriveAccountLsdirCacheRefreshOut, DriveAccountOut, DriveAccountStatusIn, DriveAccountUpdateIn, DriveTypeOut
+from app.schemas.drive_account import DriveAccountCreateIn, DriveAccountLsdirCacheRefreshIn, DriveAccountLsdirCacheRefreshOut, DriveAccountLsdirCacheStatusListOut, DriveAccountLsdirCacheStatusOut, DriveAccountOut, DriveAccountStatusIn, DriveAccountUpdateIn, DriveTypeOut
 from app.schemas.drive_account_auth import DriveAccountCaptchaSubmitIn, DriveAccountSmsSubmitIn
 from app.schemas.drive_account_probe_scheduler import DriveAccountProbeSchedulerSettingOut, DriveAccountProbeSchedulerSettingUpdateIn
 from app.extensions.adapters.adapter_factory import AdapterFactory
@@ -43,6 +43,7 @@ from app.services.drive_account_lsdir_cache import (
     get_drive_account_lsdir_cache_subtree_stats,
     is_same_or_child_path,
 )
+from app.services import drive_account_lsdir_refresh_status as refresh_status
 from app.services.drive_account_lsdir_scan import rebuild_drive_account_lsdir_cache_for_current_302_path
 from app.services.drive_account_lsdir_static_state import clear_lsdir_scan_state, clear_static_scan_state
 from app.services.dl302_settings import (
@@ -58,6 +59,13 @@ from app.thirdparty.dl302_grpc_client import reload_dl302
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+def _lsdir_refresh_status_payload(account_id: int | None) -> dict[str, object] | None:
+    """账号列表自带刷新状态"""
+    if account_id is None:
+        return None
+    return refresh_status.get_status(int(account_id))
 
 
 def _reload_dl302_if_needed(drive_type: str | None) -> None:
@@ -76,6 +84,7 @@ def _out(item, *, db: Session | None = None) -> DriveAccountOut:
     payload["lsdir_cache_base_path"] = stats_base_path
     payload["lsdir_cache_file_total"] = 0
     payload["lsdir_cache_updated_at"] = None
+    payload["lsdir_cache_refresh"] = _lsdir_refresh_status_payload(getattr(item, "id", None))
     if db is not None and getattr(item, "id", None) is not None and stats_base_path:
         total = 0
         latest_scanned_at = None
@@ -191,6 +200,15 @@ def get_auth_session_status(session_id: str):
 @router.get('', response_model=list[DriveAccountOut], dependencies=[Depends(require_permissions(DRIVE_ACCOUNT_READ))])
 def get_accounts(db: Session = Depends(get_db)):
     return [_out(item, db=db) for item in list_drive_accounts(db)]
+
+
+@router.get('/lsdir-cache/status', response_model=DriveAccountLsdirCacheStatusListOut, dependencies=[Depends(require_permissions(DRIVE_ACCOUNT_READ))])
+def get_accounts_lsdir_cache_status(db: Session = Depends(get_db)):
+    """轻量级刷新状态轮询接口：不查缓存统计、不探测账号，只读刷新登记表。"""
+    account_ids = [int(item.id) for item in list_drive_accounts(db)]
+    return DriveAccountLsdirCacheStatusListOut(
+        items=[DriveAccountLsdirCacheStatusOut(**status) for status in refresh_status.list_statuses(account_ids)]
+    )
 
 
 def _probe_scheduler_out(item) -> DriveAccountProbeSchedulerSettingOut:
@@ -355,6 +373,7 @@ def post_account_lsdir_cache_refresh(
         rebuild_dynamic=True,
         rescan_static=bool(payload.rescan_static),
     )
+    result["refresh_status"] = refresh_status.get_status(int(account_id))
     audit.write_audit_log(
         db,
         actor_user_id=current.user.id,

@@ -165,7 +165,9 @@ class DL302InternalCasRefreshIn(BaseModel):
     drive_type: str = ""
     account: str = ""
     task_id: str = ""
-    relative_dir_paths: list[str] = Field(default_factory=list)
+    # 容忍 null：较旧的 dl302 在无子目录时会把空列表序列化成 null，
+    # 若此处声明为 list[str] 会直接 422，导致 CAS 输出目录缓存刷新静默丢失。
+    relative_dir_paths: list[str] | None = Field(default=None)
 
 
 class DL302InternalCasRefreshOut(BaseModel):
@@ -175,6 +177,8 @@ class DL302InternalCasRefreshOut(BaseModel):
     account: str = ""
     savepath: str = ""
     relative_dir_paths: list[str] = Field(default_factory=list)
+    queued: bool = False
+    recursive: bool = False
     scanned_dirs: int = 0
     cached_items: int = 0
     message: str = ""

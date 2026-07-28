@@ -37,6 +37,7 @@ from app.services.drive_account_lsdir_static_state import (
     should_rescan_lsdir_path,
     should_rescan_static_path,
 )
+from app.services import drive_account_lsdir_refresh_status as refresh_status
 from app.services.dl302_settings import (
     extract_dl302_cache_base_path,
     extract_dl302_static_cache_base_path,
@@ -214,6 +215,11 @@ def trigger_drive_account_lsdir_scan(account_id: int, source: str) -> bool:
             return False
         _running_accounts.add(account_key)
 
+    refresh_status.mark_queued(
+        account_key,
+        kind=refresh_status.KIND_FULL,
+        source=str(source or ""),
+    )
     thread = threading.Thread(
         target=_scan_drive_account_worker,
         args=(account_key, str(source or "")),
@@ -248,6 +254,13 @@ def trigger_drive_account_lsdir_targeted_scan(
             return False
         _running_accounts.add(account_key)
 
+    refresh_status.mark_queued(
+        account_key,
+        kind=refresh_status.KIND_TARGETED,
+        source=str(source or ""),
+        savepath=normalized_savepath,
+        target_dirs=len(relative_dir_paths or []),
+    )
     thread = threading.Thread(
         target=_scan_drive_account_targeted_worker,
         args=(
@@ -401,9 +414,23 @@ def refresh_drive_account_lsdir_paths(
     include_cas_root_dir: bool = True,
     allow_static_path_rescan: bool = False,
     include_static_base: bool = False,
+    status_kind: str = "",
 ) -> ScanStats:
     account_key = int(account_id)
     normalized_savepath = _normalize_parent_path(savepath)
+    status_kind_text = str(status_kind or refresh_status.KIND_TARGETED)
+    refresh_status.mark_queued(
+        account_key,
+        kind=status_kind_text,
+        source=str(source or ""),
+        savepath=normalized_savepath,
+        target_dirs=len(relative_dir_paths or []),
+        dedup_key=refresh_status.build_dedup_key(
+            kind=status_kind_text,
+            savepath=normalized_savepath,
+            relative_dirs=[str(item or "") for item in (relative_dir_paths or [])],
+        ),
+    )
 
     waited = 0.0
     while True:
@@ -412,8 +439,11 @@ def refresh_drive_account_lsdir_paths(
                 _running_accounts.add(account_key)
                 break
         if not bool(wait_if_busy):
+            refresh_status.abandon_queued(account_key, error="scan_busy")
             raise RuntimeError(f"drive account lsdir targeted scan busy account_id={account_key} savepath={normalized_savepath}")
+        refresh_status.mark_waiting(account_key)
         if waited >= float(max_wait_seconds or 0):
+            refresh_status.abandon_queued(account_key, error=f"scan_busy_timeout waited={waited:.1f}s")
             raise RuntimeError(
                 f"drive account lsdir targeted scan busy account_id={account_key} savepath={normalized_savepath} waited={waited}"
             )
@@ -423,10 +453,18 @@ def refresh_drive_account_lsdir_paths(
     started_at = time.monotonic()
     failed_fid: str | None = None
     stats = ScanStats()
+    scan_error: str = ""
     try:
         context = _load_scan_account_context(account_id=account_key, source=source, scan_label="sync targeted scan")
         if context is None:
             raise RuntimeError(f"drive account unavailable account_id={account_key}")
+        refresh_status.mark_running(
+            account_key,
+            drive_type=context.drive_type,
+            kind=status_kind_text,
+            source=str(source or ""),
+            savepath=normalized_savepath,
+        )
         adapter = AdapterFactory.create_adapter(
             context.drive_type,
             context.runtime_cookie,
@@ -454,7 +492,7 @@ def refresh_drive_account_lsdir_paths(
             adapter=adapter,
             target_paths=target_specs,
             lsdir_scope=context.lsdir_scope,
-            progress_hook=progress_hook,
+            progress_hook=_build_refresh_progress_hook(account_key, progress_hook),
         )
         with SessionLocal() as db:
             _trigger_dl302_strm_after_scan(db=db, source=f"{source}.sync_targeted")
@@ -462,6 +500,7 @@ def refresh_drive_account_lsdir_paths(
         return stats
     except Exception as exc:
         failed_fid = getattr(exc, "fid", None) or failed_fid
+        scan_error = str(exc).strip() or type(exc).__name__
         logger.exception(
             "drive account lsdir sync targeted scan failed account_id=%s source=%s failed_fid=%s target_paths=%s",
             account_key,
@@ -473,6 +512,12 @@ def refresh_drive_account_lsdir_paths(
     finally:
         with _running_accounts_lock:
             _running_accounts.discard(account_key)
+        _finalize_refresh_status(
+            account_key,
+            stats=stats,
+            error=scan_error,
+            started_at=started_at,
+        )
         logger.info(
             "drive account lsdir sync targeted scan finished account_id=%s source=%s scanned_dirs=%s cached_items=%s duration_ms=%s failed_fid=%s target_paths=%s",
             account_key,
@@ -493,15 +538,43 @@ def trigger_drive_account_lsdir_refresh_async(
     source: str,
     recursive_savepath: bool = False,
     max_wait_seconds: float = 600.0,
-) -> None:
+    include_cas_root_dir: bool = False,
+    status_kind: str = "",
+    skip_if_duplicate: bool = False,
+) -> bool:
     """后台线程执行定向 lsdir 刷新；账号已有扫描在跑时等待其结束再刷，保证刷新不丢失。
 
     与 trigger_drive_account_lsdir_targeted_scan 的区别：后者遇到互斥直接放弃（skip-if-busy），
     本函数用于「同步任务结束后刷新新增文件目录」这类不允许丢失的场景（wait-if-busy）。
+
+    skip_if_duplicate=True 时，相同账号 + 相同目标目录的刷新若已在排队/执行中则不重复入队，
+    用于 dl302 通知重试、同一任务多次回调等场景。返回是否真正入队。
     """
     account_key = int(account_id)
     normalized_savepath = _normalize_parent_path(savepath)
     relative_dirs = [str(item or "") for item in (relative_dir_paths or [])]
+    status_kind_text = str(status_kind or refresh_status.KIND_TARGETED)
+
+    if not refresh_status.mark_queued(
+        account_key,
+        kind=status_kind_text,
+        source=str(source or ""),
+        savepath=normalized_savepath,
+        target_dirs=len(relative_dirs),
+        dedup_key=refresh_status.build_dedup_key(
+            kind=status_kind_text,
+            savepath=normalized_savepath,
+            relative_dirs=relative_dirs,
+        ),
+        skip_if_duplicate=bool(skip_if_duplicate),
+    ):
+        logger.info(
+            "drive account lsdir async refresh skipped: duplicate request account_id=%s source=%s savepath=%s",
+            account_key,
+            source,
+            normalized_savepath,
+        )
+        return False
 
     def _worker() -> None:
         try:
@@ -513,7 +586,8 @@ def trigger_drive_account_lsdir_refresh_async(
                 recursive_savepath=bool(recursive_savepath),
                 wait_if_busy=True,
                 max_wait_seconds=float(max_wait_seconds),
-                include_cas_root_dir=False,
+                include_cas_root_dir=bool(include_cas_root_dir),
+                status_kind=status_kind_text,
             )
         except Exception as exc:
             logger.warning(
@@ -529,6 +603,7 @@ def trigger_drive_account_lsdir_refresh_async(
         name=f"drive-account-lsdir-async-refresh-{account_key}",
         daemon=True,
     ).start()
+    return True
 
 
 def recover_incomplete_drive_account_static_scans(source: str = "startup.recover_static_lsdir") -> dict[str, int]:
@@ -644,14 +719,62 @@ def recover_incomplete_drive_account_lsdir_scans(source: str = "startup.recover_
     return {"checked": checked, "queued": queued, "skipped": skipped}
 
 
+def _build_refresh_progress_hook(account_id: int, delegate=None):
+    """把扫描进度同步到刷新状态登记表，并保留调用方自己的 progress_hook。"""
+
+    def _hook(stats: ScanStats, current_path: str, queue_len: int) -> None:
+        refresh_status.update_progress(
+            int(account_id),
+            scanned_dirs=int(getattr(stats, "scanned_dirs", 0) or 0),
+            cached_items=int(getattr(stats, "cached_items", 0) or 0),
+            current_path=str(current_path or ""),
+            pending_dirs=int(queue_len or 0),
+        )
+        if delegate is not None:
+            delegate(stats, current_path, queue_len)
+
+    return _hook
+
+
+def _finalize_refresh_status(account_id: int, *, stats: ScanStats, error: str, started_at: float) -> None:
+    """统一收尾：无论成功/失败/提前 return，状态都不会残留在 running。"""
+    duration_ms = int((time.monotonic() - float(started_at)) * 1000)
+    scanned_dirs = int(getattr(stats, "scanned_dirs", 0) or 0)
+    cached_items = int(getattr(stats, "cached_items", 0) or 0)
+    if str(error or "").strip():
+        refresh_status.mark_failed(
+            int(account_id),
+            error=str(error),
+            scanned_dirs=scanned_dirs,
+            cached_items=cached_items,
+            duration_ms=duration_ms,
+        )
+        return
+    refresh_status.mark_completed(
+        int(account_id),
+        scanned_dirs=scanned_dirs,
+        cached_items=cached_items,
+        duration_ms=duration_ms,
+    )
+
+
 def _scan_drive_account_worker(account_id: int, source: str) -> None:
     started_at = time.monotonic()
     failed_fid: str | None = None
     stats = ScanStats()
+    scan_error: str = ""
     try:
         context = _load_scan_account_context(account_id=account_id, source=source, scan_label="scan")
         if context is None:
+            scan_error = "account_unavailable"
             return
+        refresh_status.mark_running(
+            int(account_id),
+            drive_type=context.drive_type,
+            kind=refresh_status.KIND_FULL,
+            source=str(source or ""),
+            savepath=str(context.lsdir_scope.get("cache_base_path") or ""),
+        )
         adapter = AdapterFactory.create_adapter(
             context.drive_type,
             context.runtime_cookie,
@@ -666,6 +789,7 @@ def _scan_drive_account_worker(account_id: int, source: str) -> None:
                 context.drive_type,
                 source,
             )
+            scan_error = "adapter_unavailable"
             return
         if not getattr(adapter, "is_active", False):
             ok = adapter.init()
@@ -677,18 +801,21 @@ def _scan_drive_account_worker(account_id: int, source: str) -> None:
                     context.drive_type,
                     source,
                 )
+                scan_error = "adapter_init_failed"
                 return
         stats = _walk_account_tree(
             account_id=context.account_id,
             drive_type=context.drive_type,
             adapter=adapter,
             lsdir_scope=context.lsdir_scope,
+            progress_hook=_build_refresh_progress_hook(int(account_id)),
         )
         with SessionLocal() as db:
             _trigger_dl302_strm_after_scan(db=db, source=f"{source}.full")
             db.commit()
     except Exception as exc:
         failed_fid = getattr(exc, "fid", None) or failed_fid
+        scan_error = str(exc).strip() or type(exc).__name__
         logger.exception(
             "drive account lsdir scan failed account_id=%s source=%s failed_fid=%s",
             account_id,
@@ -698,6 +825,12 @@ def _scan_drive_account_worker(account_id: int, source: str) -> None:
     finally:
         with _running_accounts_lock:
             _running_accounts.discard(int(account_id))
+        _finalize_refresh_status(
+            int(account_id),
+            stats=stats,
+            error=scan_error,
+            started_at=started_at,
+        )
         logger.info(
             "drive account lsdir scan finished account_id=%s source=%s scanned_dirs=%s cached_items=%s duration_ms=%s failed_fid=%s",
             account_id,
@@ -722,10 +855,19 @@ def _scan_drive_account_targeted_worker(
     failed_fid: str | None = None
     stats = ScanStats()
     target_specs: list[TargetPathSpec] = []
+    scan_error: str = ""
     try:
         context = _load_scan_account_context(account_id=account_id, source=source, scan_label="targeted scan")
         if context is None:
+            scan_error = "account_unavailable"
             return
+        refresh_status.mark_running(
+            int(account_id),
+            drive_type=context.drive_type,
+            kind=refresh_status.KIND_TARGETED,
+            source=str(source or ""),
+            savepath=str(savepath or ""),
+        )
         adapter = AdapterFactory.create_adapter(
             context.drive_type,
             context.runtime_cookie,
@@ -740,6 +882,7 @@ def _scan_drive_account_targeted_worker(
                 context.drive_type,
                 source,
             )
+            scan_error = "adapter_unavailable"
             return
         if not getattr(adapter, "is_active", False):
             ok = adapter.init()
@@ -751,6 +894,7 @@ def _scan_drive_account_targeted_worker(
                     context.drive_type,
                     source,
                 )
+                scan_error = "adapter_init_failed"
                 return
         target_specs = _build_requested_target_specs(
             savepath=savepath,
@@ -767,12 +911,14 @@ def _scan_drive_account_targeted_worker(
             adapter=adapter,
             target_paths=target_specs,
             lsdir_scope=context.lsdir_scope,
+            progress_hook=_build_refresh_progress_hook(int(account_id)),
         )
         with SessionLocal() as db:
             _trigger_dl302_strm_after_scan(db=db, source=f"{source}.targeted")
             db.commit()
     except Exception as exc:
         failed_fid = getattr(exc, "fid", None) or failed_fid
+        scan_error = str(exc).strip() or type(exc).__name__
         logger.exception(
             "drive account lsdir targeted scan failed account_id=%s source=%s failed_fid=%s target_paths=%s",
             account_id,
@@ -783,6 +929,12 @@ def _scan_drive_account_targeted_worker(
     finally:
         with _running_accounts_lock:
             _running_accounts.discard(int(account_id))
+        _finalize_refresh_status(
+            int(account_id),
+            stats=stats,
+            error=scan_error,
+            started_at=started_at,
+        )
         logger.info(
             "drive account lsdir targeted scan finished account_id=%s source=%s scanned_dirs=%s cached_items=%s duration_ms=%s failed_fid=%s target_paths=%s",
             account_id,
@@ -828,7 +980,7 @@ def _load_scan_account_context(*, account_id: int, source: str, scan_label: str)
         )
 
 
-def _walk_account_tree(*, account_id: int, drive_type: str, adapter, lsdir_scope: dict[str, Any]) -> ScanStats:
+def _walk_account_tree(*, account_id: int, drive_type: str, adapter, lsdir_scope: dict[str, Any], progress_hook=None) -> ScanStats:
     cache_base_path = _normalize_optional_scan_path(lsdir_scope.get("cache_base_path"))
     static_base_path = _normalize_optional_scan_path(lsdir_scope.get("static_cache_base_path"))
     target_specs: list[TargetPathSpec] = []
@@ -870,6 +1022,7 @@ def _walk_account_tree(*, account_id: int, drive_type: str, adapter, lsdir_scope
         adapter=adapter,
         target_paths=target_specs,
         lsdir_scope=lsdir_scope,
+        progress_hook=progress_hook,
     )
 
 

@@ -80,6 +80,46 @@ export function itemStatusClass(status?: string | null): string {
   }
 }
 
+/** CAS 明细失败分类的中文文案（error_class 由 dl302 casengine 写入） */
+export function errorClassLabel(cls?: string | null): string {
+  switch ((cls || '').trim()) {
+    case 'network':
+      return '网络波动'
+    case 'auth':
+      return '鉴权失效'
+    case 'quota':
+      return '空间不足'
+    case 'not_found':
+      return '文件不存在'
+    case 'invalid':
+      return '参数错误'
+    case 'canceled':
+      return '已中断'
+    case '':
+      return ''
+    default:
+      return '未知错误'
+  }
+}
+
+/** 失败分类徽标配色：可自愈的网络类用琥珀色，需人工处理的用红色 */
+export function errorClassBadgeClass(cls?: string | null): string {
+  switch ((cls || '').trim()) {
+    case 'network':
+      return 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+    case 'auth':
+    case 'quota':
+      return 'bg-red-500/15 text-red-500'
+    case 'not_found':
+    case 'invalid':
+      return 'bg-orange-500/15 text-orange-600 dark:text-orange-400'
+    case 'canceled':
+      return 'bg-gray-500/15 text-gray-500 dark:text-gray-400'
+    default:
+      return 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'
+  }
+}
+
 export function taskProcessedItems(task?: DL302CASTask | null): number {
   if (!task) return 0
   return Number(task.done_items || 0) + Number(task.skipped_items || 0) + Number(task.failed_items || 0)

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import logging
 from pathlib import PurePosixPath
 
 import grpc
 
 from app.core.errors import ApiError, bad_request, not_found
 from app.models.drive_account import DriveAccount
-from app.services.drive_account_lsdir_scan import refresh_drive_account_lsdir_paths
+from app.services.drive_account_lsdir_refresh_status import KIND_CAS_OUTPUT, KIND_TARGETED
+from app.services.drive_account_lsdir_scan import (
+    refresh_drive_account_lsdir_paths,
+    trigger_drive_account_lsdir_refresh_async,
+)
 from app.services.dl302_settings import extract_dl302_cas_base_paths
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_media_base_path(raw: object) -> str | None:
@@ -119,6 +127,7 @@ def _task_item_to_dict(item) -> dict[str, object]:
         "stage_total": int(getattr(item, "stage_total", 0) or 0),
         "retry_count": int(getattr(item, "retry_count", 0) or 0),
         "last_error": str(getattr(item, "last_error", "") or ""),
+        "error_class": str(getattr(item, "error_class", "") or ""),
         "rapid_drive_types": str(getattr(item, "rapid_drive_types", "") or ""),
     }
 
@@ -144,6 +153,112 @@ def _resolve_account(
     return account
 
 
+def _ensure_media_lsdir_cache_ready(
+    db,
+    account: DriveAccount,
+    *,
+    media_base_paths: list[str],
+    source: str,
+) -> None:
+
+    from app.services.drive_account_lsdir_cache import get_drive_account_lsdir_cache_subtree_stats
+
+    account_id = int(getattr(account, "id", 0) or 0)
+    empty_paths: list[str] = []
+    for base_path in media_base_paths:
+        stats = get_drive_account_lsdir_cache_subtree_stats(db, account_id=account_id, full_path=base_path)
+        if int(stats.get("file_total") or 0) <= 0:
+            empty_paths.append(base_path)
+    if not empty_paths:
+        return
+
+    queued = False
+    for base_path in empty_paths:
+        queued = trigger_drive_account_lsdir_refresh_async(
+            account_id,
+            savepath=base_path,
+            relative_dir_paths=[],
+            recursive_savepath=True,
+            source=source,
+            max_wait_seconds=1800.0,
+            include_cas_root_dir=True,
+            status_kind=KIND_TARGETED,
+            skip_if_duplicate=True,
+        ) or queued
+    hint = "，已自动触发缓存刷新，请待账号缓存刷新完成后重试" if queued else "，账号缓存刷新正在进行中，请等待完成后重试"
+    raise bad_request(
+        "DL302_CAS_LSDIR_CACHE_NOT_READY",
+        f"媒体目录缓存为空：{', '.join(empty_paths)}{hint}",
+    )
+
+
+def _ensure_delta_lsdir_cache_ready(
+    db,
+    account: DriveAccount,
+    *,
+    base_path: str,
+    dir_paths: list[str],
+    file_paths: list[str],
+    source: str,
+) -> None:
+
+    from app.services.drive_account_lsdir_cache import get_drive_account_lsdir_cache_subtree_stats
+
+    account_id = int(getattr(account, "id", 0) or 0)
+    target_dirs: set[str] = {str(item or "").strip() for item in dir_paths if str(item or "").strip()}
+    for raw in file_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        target_dirs.add(str(PurePosixPath(text).parent))
+
+    missing_relative_dirs: list[str] = []
+    for full_path in sorted(target_dirs):
+        stats = get_drive_account_lsdir_cache_subtree_stats(db, account_id=account_id, full_path=full_path)
+        if int(stats.get("entry_total") or 0) > 0:
+            continue
+        relative = _relative_to_base(full_path, base_path)
+        if relative is None:
+            continue
+        missing_relative_dirs.append(relative)
+    if not missing_relative_dirs:
+        return
+
+    try:
+        refresh_drive_account_lsdir_paths(
+            account_id,
+            savepath=base_path,
+            relative_dir_paths=missing_relative_dirs,
+            recursive_savepath=False,
+            source=source,
+            wait_if_busy=True,
+            max_wait_seconds=300.0,
+            include_cas_root_dir=False,
+            status_kind=KIND_TARGETED,
+        )
+    except Exception as exc:
+        logger.warning(
+            "dl302 cas delta pre-refresh failed account_id=%s base_path=%s dirs=%s err=%s",
+            account_id,
+            base_path,
+            missing_relative_dirs,
+            str(exc).strip() or type(exc).__name__,
+        )
+
+
+def _relative_to_base(full_path: str, base_path: str) -> str | None:
+    normalized_full = _normalize_media_base_path(full_path)
+    normalized_base = _normalize_media_base_path(base_path)
+    if not normalized_full or not normalized_base:
+        return None
+    if normalized_full == normalized_base:
+        return ""
+    prefix = normalized_base if normalized_base.endswith("/") else f"{normalized_base}/"
+    if not normalized_full.startswith(prefix):
+        return None
+    return normalized_full[len(prefix):].strip("/") or ""
+
+
 def submit_dl302_cas_task(account_id: int, db, *, fast_compute: bool = False) -> dict[str, object]:
     from app.thirdparty.dl302_grpc_client import submit_cas_task
     from app.services.dl302_settings import get_or_create_dl302_setting, load_dl302_config
@@ -152,6 +267,12 @@ def submit_dl302_cas_task(account_id: int, db, *, fast_compute: bool = False) ->
     if not str(config.get("cas_root_dir") or "").strip():
         raise bad_request("DL302_CAS_ROOT_DIR_REQUIRED", "请先配置 CAS 文件生成目录")
     account = _resolve_account(account_id, db, require_media_base_path=True, require_enabled=True)
+    _ensure_media_lsdir_cache_ready(
+        db,
+        account,
+        media_base_paths=_extract_account_media_base_paths(account),
+        source=f"dl302.cas.submit:{int(account_id)}",
+    )
     try:
         resp = submit_cas_task(
             drive_type=str(getattr(account, "drive_type", "") or ""),
@@ -204,27 +325,144 @@ def refresh_dl302_cas_output_directory_cache(
         seen_relative_dirs.add(normalized)
         normalized_relative_dirs.append(normalized)
 
-    stats = refresh_drive_account_lsdir_paths(
-        account_id=int(getattr(row, "id", 0) or 0),
+    recursive_savepath = not normalized_relative_dirs
+
+    account_id = int(getattr(row, "id", 0) or 0)
+    queued = trigger_drive_account_lsdir_refresh_async(
+        account_id,
         savepath=cas_root_dir,
-        relative_dir_paths=normalized_relative_dirs or None,
-        recursive_savepath=False,
+        relative_dir_paths=normalized_relative_dirs,
+        recursive_savepath=recursive_savepath,
         source=f"dl302.cas.done:{str(task_id or '').strip() or 'unknown'}",
-        wait_if_busy=True,
         max_wait_seconds=600.0,
         include_cas_root_dir=False,
+        status_kind=KIND_CAS_OUTPUT,
+        skip_if_duplicate=True,
     )
     return {
         "ok": True,
-        "account_id": int(getattr(row, "id", 0) or 0),
+        "account_id": account_id,
         "drive_type": drive_type_text,
         "account": account_name,
         "savepath": cas_root_dir,
         "relative_dir_paths": normalized_relative_dirs,
-        "scanned_dirs": int(getattr(stats, "scanned_dirs", 0) or 0),
-        "cached_items": int(getattr(stats, "cached_items", 0) or 0),
-        "message": "CAS 输出目录缓存刷新完成",
+        "queued": bool(queued),
+        "recursive": bool(recursive_savepath),
+        "scanned_dirs": 0,
+        "cached_items": 0,
+        "message": "CAS 输出目录缓存刷新已入队" if queued else "CAS 输出目录缓存刷新已在进行中，本次请求合并",
     }
+
+
+def _is_cas_root_maintained_by_base_scan(
+    cas_root_dir: str,
+    *,
+    cache_base_path: str | None,
+    static_base_path: str | None,
+) -> bool:
+    from app.services.drive_account_lsdir_cache import is_same_or_child_path
+
+    for base_path in (cache_base_path, static_base_path):
+        normalized_base = _normalize_media_base_path(base_path)
+        if not normalized_base:
+            continue
+        if is_same_or_child_path(parent_path=normalized_base, child_path=cas_root_dir):
+            return True
+    return False
+
+
+def handle_dl302_cas_root_dir_change(
+    db,
+    *,
+    previous_cas_root_dir: object,
+    current_cas_root_dir: object,
+    source: str = "dl302.config.cas_root_dir",
+) -> dict[str, object]:
+
+    from app.services.drive_account_lsdir_cache import delete_drive_account_lsdir_cache_subtree_by_path
+    from app.services.dl302_settings import extract_dl302_cache_base_path, extract_dl302_static_cache_base_path
+
+    previous_root = _normalize_media_base_path(previous_cas_root_dir)
+    current_root = _normalize_media_base_path(current_cas_root_dir)
+    result: dict[str, object] = {
+        "changed": False,
+        "previous_cas_root_dir": previous_root or "",
+        "cas_root_dir": current_root or "",
+        "purged_account_ids": [],
+        "purged_entries": 0,
+        "queued_account_ids": [],
+        "skipped_account_ids": [],
+    }
+    if previous_root == current_root:
+        return result
+    result["changed"] = True
+
+    accounts = db.query(DriveAccount).order_by(DriveAccount.id.asc()).all()
+    account_scopes: list[tuple[int, DriveAccount, str | None, str | None]] = []
+    for account in accounts:
+        account_id = int(getattr(account, "id", 0) or 0)
+        if account_id <= 0:
+            continue
+        account_scopes.append(
+            (
+                account_id,
+                account,
+                extract_dl302_cache_base_path(account),
+                extract_dl302_static_cache_base_path(account),
+            )
+        )
+
+    purged_entries = 0
+    purged_account_ids: list[int] = []
+    if previous_root and previous_root != "/":
+        for account_id, _account, cache_base_path, static_base_path in account_scopes:
+            if _is_cas_root_maintained_by_base_scan(
+                previous_root,
+                cache_base_path=cache_base_path,
+                static_base_path=static_base_path,
+            ):
+                continue
+            removed = delete_drive_account_lsdir_cache_subtree_by_path(
+                db,
+                account_id=account_id,
+                full_path=previous_root,
+            )
+            if removed > 0:
+                purged_entries += removed
+                purged_account_ids.append(account_id)
+        if purged_entries:
+            db.commit()
+    result["purged_entries"] = purged_entries
+    result["purged_account_ids"] = purged_account_ids
+
+    if not current_root or current_root == "/":
+        return result
+
+    queued_account_ids: list[int] = []
+    skipped_account_ids: list[int] = []
+    for account_id, account, cache_base_path, _static_base_path in account_scopes:
+        if not bool(getattr(account, "enabled", False)):
+            continue
+        if not cache_base_path and not _extract_account_media_base_paths(account):
+            continue
+        queued = trigger_drive_account_lsdir_refresh_async(
+            account_id,
+            savepath=current_root,
+            relative_dir_paths=[],
+            recursive_savepath=True,
+            source=source,
+            max_wait_seconds=1800.0,
+            include_cas_root_dir=False,
+            status_kind=KIND_CAS_OUTPUT,
+            skip_if_duplicate=True,
+        )
+        if queued:
+            queued_account_ids.append(account_id)
+        else:
+            skipped_account_ids.append(account_id)
+    result["queued_account_ids"] = queued_account_ids
+    result["skipped_account_ids"] = skipped_account_ids
+    return result
 
 
 def submit_dl302_cas_task_delta(
@@ -279,6 +517,15 @@ def submit_dl302_cas_task_delta(
 
     if len(filtered_files) > 5000:
         raise bad_request("DL302_CAS_DELTA_TOO_LARGE", "增量文件数过大，请改用目录增量或分批提交")
+
+    _ensure_delta_lsdir_cache_ready(
+        db,
+        account,
+        base_path=effective_base_path,
+        dir_paths=filtered_dirs,
+        file_paths=filtered_files,
+        source=f"dl302.cas.delta:{int(account_id)}",
+    )
 
     try:
         resp = submit_cas_task_delta(

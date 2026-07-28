@@ -29,6 +29,7 @@ from app.services import audit
 from app.services.dl302_cas import (
     cancel_dl302_cas_task,
     get_dl302_cas_task,
+    handle_dl302_cas_root_dir_change,
     list_dl302_cas_task_items,
     list_dl302_cas_tasks,
     pause_dl302_cas_task,
@@ -99,6 +100,24 @@ def patch_dl302_config(
     if not ok:
         logger.warning("dl302 reload failed after config update: %s", msg)
     config = load_dl302_config(item)
+    # CAS 生成目录改动必须在 STRM 重建之前收尾：旧目录的残留缓存行会被 STRM 生成按前缀读到，
+    # 新目录则要等刷新落库后才有内容，刷新完成时 _trigger_dl302_strm_after_scan 会再自动重建一次。
+    cas_root_change = handle_dl302_cas_root_dir_change(
+        db,
+        previous_cas_root_dir=previous_config.get("cas_root_dir"),
+        current_cas_root_dir=config.get("cas_root_dir"),
+        source="dl302.config.cas_root_dir",
+    )
+    if bool(cas_root_change.get("changed")):
+        logger.info(
+            "dl302 cas root dir changed previous=%s current=%s purged_entries=%s purged_accounts=%s queued_accounts=%s skipped_accounts=%s",
+            cas_root_change.get("previous_cas_root_dir"),
+            cas_root_change.get("cas_root_dir"),
+            cas_root_change.get("purged_entries"),
+            cas_root_change.get("purged_account_ids"),
+            cas_root_change.get("queued_account_ids"),
+            cas_root_change.get("skipped_account_ids"),
+        )
     if bool(config.get("strm_enabled")):
         strm_config_changed = any(
             key in payload.model_fields_set

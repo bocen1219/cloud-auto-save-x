@@ -1,5 +1,5 @@
 import { http } from '@/api/http'
-import type { Cloud189FamilyItem, DriveAccountItem, DriveAccountLsdirCacheRefreshResult, DriveTypeItem, PluginItem } from '@/types/extensions'
+import type { Cloud189FamilyItem, DriveAccountItem, DriveAccountLsdirCacheRefreshResult, DriveAccountLsdirCacheStatus, DriveTypeItem, PluginItem } from '@/types/extensions'
 
 export async function fetchDriveAccounts() {
   const { data } = await http.get<DriveAccountItem[]>('/drive-accounts')
@@ -73,6 +73,13 @@ export async function probeDriveAccount(accountId: number, options?: { silentToa
 export async function refreshDriveAccountLsdirCache(accountId: number, payload?: { rescan_static?: boolean }) {
   const { data } = await http.post<DriveAccountLsdirCacheRefreshResult>(`/drive-accounts/${accountId}/lsdir-cache/refresh`, payload || {})
   return data
+}
+
+export async function fetchDriveAccountLsdirCacheStatuses() {
+  const { data } = await http.get<{ items: DriveAccountLsdirCacheStatus[] }>('/drive-accounts/lsdir-cache/status', {
+    headers: { 'X-Silent-Toast': '1' },
+  })
+  return data.items || []
 }
 
 export async function signInDriveAccount(accountId: number, options?: { silentToast?: boolean }) {

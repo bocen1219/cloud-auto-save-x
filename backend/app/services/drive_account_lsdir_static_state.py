@@ -29,6 +29,11 @@ def resolve_drive_account_lsdir_scan_state_dir() -> str:
     return os.path.join(_resolve_drive_account_lsdir_state_base_dir(), "drive_account_lsdir_scan")
 
 
+def resolve_drive_account_lsdir_refresh_state_dir() -> str:
+    """刷新状态（含手动刷新/定向刷新/CAS 输出目录刷新）的落盘目录。"""
+    return os.path.join(_resolve_drive_account_lsdir_state_base_dir(), "drive_account_lsdir_refresh")
+
+
 def ensure_drive_account_lsdir_static_state_dir() -> str:
     path = resolve_drive_account_lsdir_static_state_dir()
     os.makedirs(path, exist_ok=True)

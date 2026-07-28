@@ -16,6 +16,8 @@ import {
   casStatusClass,
   itemStatusLabel,
   itemStatusClass,
+  errorClassLabel,
+  errorClassBadgeClass,
   taskProcessedItems,
   itemPercent,
   formatStageProgress,
@@ -60,7 +62,7 @@ const filteredItems = computed(() => {
   return (itemsMap[taskId] || []).filter((item) => {
     if (st !== 'all' && item.status !== st) return false
     if (!keyword) return true
-    return [item.name, item.file_path, item.stage, item.last_error, item.rapid_drive_types]
+    return [item.name, item.file_path, item.stage, item.last_error, errorClassLabel(item.error_class), item.rapid_drive_types]
       .map((v) => String(v || '').toLowerCase())
       .some((v) => v.includes(keyword))
   })
@@ -324,7 +326,16 @@ onBeforeUnmount(stopPoll)
                   <div v-if="item.status === 'running' || item.stage_total > 0" class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[hsl(var(--muted))]">
                     <div class="h-full rounded-full bg-[hsl(var(--primary))] transition-all" :style="{ width: `${itemPercent(item)}%` }" />
                   </div>
-                  <div v-if="item.last_error" class="mt-1 break-all text-xs text-red-500">错误：{{ item.last_error }}</div>
+                  <div v-if="item.last_error" class="mt-1 flex flex-wrap items-start gap-1.5 break-all text-xs text-red-500">
+                    <span
+                      v-if="errorClassLabel(item.error_class)"
+                      class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                      :class="errorClassBadgeClass(item.error_class)"
+                    >
+                      {{ errorClassLabel(item.error_class) }}
+                    </span>
+                    <span>错误：{{ item.last_error }}</span>
+                  </div>
                 </div>
               </div>
               <div v-else class="py-10 text-center text-sm text-[hsl(var(--muted-foreground))]">当前筛选条件下暂无明细</div>

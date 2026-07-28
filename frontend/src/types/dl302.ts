@@ -31,6 +31,8 @@ export type DL302CASTaskItem = {
   stage_total: number
   retry_count: number
   last_error: string
+  /** dl302 casengine 的失败分类，用于展示友好的错误徽标（旧后端可能缺省） */
+  error_class?: string
   rapid_drive_types: string
 }
 

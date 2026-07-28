@@ -32,7 +32,7 @@ import {
   AlertTriangle,
   HelpCircle,
 } from 'lucide-vue-next'
-import { useDriveAccountsQuery, useDriveTypesQuery, useDriveAccountProbeSchedulerQuery } from '@/hooks/queries/extensions'
+import { useDriveAccountsQuery, useDriveTypesQuery, useDriveAccountProbeSchedulerQuery, useDriveAccountLsdirCacheStatusQuery } from '@/hooks/queries/extensions'
 import {
   useCreateDriveAccountMutation,
   useUpdateDriveAccountMutation,
@@ -49,10 +49,11 @@ import { useAuthStore } from '@/stores/auth'
 import { DRIVE_ACCOUNT_WRITE } from '@/constants/permissions'
 import { parseAuthChallenge, extractErrorMessage, supportsTvQrcodeAuth } from '@/lib/driveAuth'
 import { formatBytes, formatPercent, formatDateTime } from '@/lib/capacity'
+import { isLsdirRefreshActive, lsdirRefreshBadge } from '@/lib/lsdirCache'
 import { validateCrontab5, validateTimezone } from '@/lib/cron'
 import DriveAccountSheet from './DriveAccountSheet.vue'
 import DriveAccountAuthDialog from './DriveAccountAuthDialog.vue'
-import type { DriveAccountItem, DriveAccountAuthChallenge } from '@/types/extensions'
+import type { DriveAccountItem, DriveAccountAuthChallenge, DriveAccountLsdirCacheStatus } from '@/types/extensions'
 
 const { toast } = useToast()
 const queryClient = useQueryClient()
@@ -187,6 +188,66 @@ function hasAnyConfigValue(config: Record<string, any>) {
 function invalidateAccounts() {
   queryClient.invalidateQueries({ queryKey: ['drive-accounts'] })
 }
+
+// --- lsdir cache refresh status ---
+// 账号列表自带一份刷新状态（首屏可直接渲染），轻量级状态接口在有刷新进行时接管轮询。
+const { data: cacheStatusList } = useDriveAccountLsdirCacheStatusQuery(() => accountList.value.some((item) => item.has_302_path))
+
+const cacheStatusMap = computed(() => {
+  const map = new Map<number, DriveAccountLsdirCacheStatus>()
+  for (const account of accountList.value) {
+    if (account.lsdir_cache_refresh) map.set(account.id, account.lsdir_cache_refresh)
+  }
+  for (const status of cacheStatusList.value || []) {
+    map.set(status.account_id, status)
+  }
+  return map
+})
+
+function getCacheStatus(account: DriveAccountItem): DriveAccountLsdirCacheStatus | null {
+  return cacheStatusMap.value.get(account.id) || null
+}
+
+function isCacheRefreshing(account: DriveAccountItem): boolean {
+  return cacheRefreshingIds.value.has(account.id) || isLsdirRefreshActive(getCacheStatus(account))
+}
+
+function getCacheStatusMeta(account: DriveAccountItem) {
+  return lsdirRefreshBadge(getCacheStatus(account))
+}
+
+function invalidateCacheStatus() {
+  queryClient.invalidateQueries({ queryKey: ['drive-account-lsdir-cache-status'] })
+}
+
+// 只对本页手动发起的刷新做结果提示，避免 CAS/同步任务的后台刷新刷屏
+const manualRefreshAccountIds = ref<Set<number>>(new Set())
+const lastSeenCacheStatus = new Map<number, string>()
+
+watch(
+  cacheStatusMap,
+  (map) => {
+    for (const [accountId, status] of map) {
+      const previous = lastSeenCacheStatus.get(accountId)
+      lastSeenCacheStatus.set(accountId, status.status)
+      if (!previous || previous === status.status) continue
+      if (!manualRefreshAccountIds.value.has(accountId)) continue
+      const accountName = accountList.value.find((item) => item.id === accountId)?.name || `#${accountId}`
+      if (status.status === 'completed') {
+        toast.success(`${accountName} 缓存刷新完成：${status.scanned_dirs ?? 0} 目录/${status.cached_items ?? 0} 项`)
+      } else if (status.status === 'failed' || status.status === 'interrupted') {
+        toast.error(`${accountName} 缓存刷新失败：${status.last_error || '未知错误'}`)
+      } else {
+        continue
+      }
+      const next = new Set(manualRefreshAccountIds.value)
+      next.delete(accountId)
+      manualRefreshAccountIds.value = next
+      invalidateAccounts()
+    }
+  },
+  { deep: true },
+)
 
 // --- Sheet ---
 function openCreateSheet() {
@@ -381,6 +442,7 @@ async function confirmCacheRefresh(rescanStatic: boolean) {
   if (!account) return
   cacheDialogOpen.value = false
   cacheRefreshingIds.value = new Set(cacheRefreshingIds.value).add(account.id)
+  manualRefreshAccountIds.value = new Set(manualRefreshAccountIds.value).add(account.id)
   try {
     const result = await refreshCacheMutation.mutateAsync({ accountId: account.id, rescanStatic })
     if (result.reason === 'running') {
@@ -392,8 +454,12 @@ async function confirmCacheRefresh(rescanStatic: boolean) {
     } else {
       toast.success('缓存刷新任务已提交，完成后会自动触发 STRM 对账')
     }
+    invalidateCacheStatus()
   } catch (e) {
     toast.error(extractErrorMessage(e, '刷新缓存失败'))
+    const next = new Set(manualRefreshAccountIds.value)
+    next.delete(account.id)
+    manualRefreshAccountIds.value = next
   } finally {
     const next = new Set(cacheRefreshingIds.value)
     next.delete(account.id)
@@ -705,6 +771,14 @@ async function saveScheduler() {
             <span v-else aria-hidden="true">&nbsp;</span>
           </div>
 
+          <!-- lsdir cache refresh status -->
+          <div v-if="account.has_302_path && getCacheStatusMeta(account)" class="mt-1.5 flex items-center gap-1.5">
+            <Badge variant="outline" :class="getCacheStatusMeta(account)!.className" :title="getCacheStatusMeta(account)!.title">
+              <RefreshCw v-if="isCacheRefreshing(account)" class="mr-1 h-3 w-3 animate-spin" />
+              <span class="max-w-[260px] truncate text-[10px]">{{ getCacheStatusMeta(account)!.label }}</span>
+            </Badge>
+          </div>
+
           <!-- footer meta -->
           <div class="mt-2 flex items-center justify-between text-[11px] text-[hsl(var(--muted-foreground))]">
             <span>最近刷新：{{ formatDateTime(account.profile_updated_at || account.last_checked_at) }}</span>
@@ -739,11 +813,11 @@ async function saveScheduler() {
               variant="ghost"
               size="sm"
               class="h-7 px-2 text-xs"
-              :disabled="cacheRefreshingIds.has(account.id)"
+              :disabled="isCacheRefreshing(account)"
               @click="openCacheDialog(account)"
             >
-              <Database class="mr-1 h-3 w-3" />
-              {{ cacheRefreshingIds.has(account.id) ? '刷新中' : '刷新缓存' }}
+              <Database class="mr-1 h-3 w-3" :class="{ 'animate-pulse': isCacheRefreshing(account) }" />
+              {{ isCacheRefreshing(account) ? '刷新中' : '刷新缓存' }}
             </Button>
             <Button v-if="canWrite" variant="ghost" size="sm" class="h-7 px-2 text-xs" @click="handleToggleStatus(account)">
               <Power class="mr-1 h-3 w-3" />
