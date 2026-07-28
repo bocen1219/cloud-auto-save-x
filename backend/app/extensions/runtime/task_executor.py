@@ -15,7 +15,7 @@ from treelib import Tree
 from app.core.errors import bad_request
 from app.db.session import SessionLocal
 from app.extensions.runtime.account_manager import DatabaseAccountManager
-from app.extensions.runtime.drama_executor import DramaTaskExecutor, SkipTask
+from app.extensions.runtime.drama_executor import DramaTaskExecutor, SkipTask, evaluate_drama_schedule_skip_reason
 from app.extensions.runtime.execution_log import ExecutionLog
 from app.extensions.runtime.plugin_hooks import PluginHookRunner, plugin_key_from_definition
 from app.extensions.runtime.plugin_loader import sync_plugin_definitions
@@ -362,6 +362,41 @@ class TaskExecutor:
                     task_data["tmdb_update_weekdays"] = []
                     task_data["tmdb_episode_weekdays"] = []
 
+            # 前置调度检查：不满足调度条件时直接跳过，不再初始化账号/插件/适配器
+            log.set_stage("validate_schedule")
+            log.section("验证调度条件")
+            schedule_skip_reason = evaluate_drama_schedule_skip_reason(task_data, line=log.line)
+            if schedule_skip_reason:
+                logger.info(
+                    "任务前置调度检查跳过 task_id=%s task_uid=%s reason=%s",
+                    int(getattr(task, "id", 0) or 0),
+                    str(getattr(task, "task_uid", "") or ""),
+                    schedule_skip_reason,
+                )
+                log.set_stage("end")
+                log.section("程序结束")
+                finished_at_local = datetime.now()
+                duration_s = (finished_at_local - log.started_at).total_seconds()
+                log.line("状态: skipped")
+                log.line(f"运行时长: {duration_s:.2f}s")
+                execution = TaskExecution(
+                    task_id=int(getattr(task, "id", 0) or 0),
+                    status='skipped',
+                    started_at=log.started_at,
+                    finished_at=finished_at_local,
+                    message=f"阶段=validate_schedule：{schedule_skip_reason}",
+                    stage="validate_schedule",
+                    run_log=log.render(),
+                    adapter_snapshot=json.dumps({}, ensure_ascii=False),
+                    plugins_snapshot=json.dumps([], ensure_ascii=False),
+                )
+                if not persist_execution:
+                    execution.id = 0
+                    return execution
+                self._persist_execution_detached(execution)
+                return execution
+            task_data["schedule_prechecked"] = True
+
         if not bool(task_data.get("disable_guessit_tmdb_fallback_rename")):
             tmdb_id = int(task_data.get("tmdb_id") or 0)
             tmdb_media_type = str(task_data.get("tmdb_media_type") or "").strip().lower()
@@ -679,14 +714,24 @@ class TaskExecutor:
             stage = log.stage or "unknown"
             message = str(exc).strip() or type(exc).__name__
             try:
-                logger.exception(
-                    "任务执行异常 task_id=%s task_uid=%s task_type=%s stage=%s err=%s",
-                    task_id,
-                    str(getattr(task, "task_uid", "") or ""),
-                    str(getattr(task, "task_type", "") or ""),
-                    stage,
-                    message,
-                )
+                if isinstance(exc, SkipTask):
+                    logger.info(
+                        "任务跳过 task_id=%s task_uid=%s task_type=%s stage=%s reason=%s",
+                        task_id,
+                        str(getattr(task, "task_uid", "") or ""),
+                        str(getattr(task, "task_type", "") or ""),
+                        stage,
+                        message,
+                    )
+                else:
+                    logger.exception(
+                        "任务执行异常 task_id=%s task_uid=%s task_type=%s stage=%s err=%s",
+                        task_id,
+                        str(getattr(task, "task_uid", "") or ""),
+                        str(getattr(task, "task_type", "") or ""),
+                        stage,
+                        message,
+                    )
             except Exception:
                 pass
             if (

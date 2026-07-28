@@ -97,6 +97,65 @@ def _parse_enddate(value: str | None) -> date | None:
         return None
 
 
+def evaluate_drama_schedule_skip_reason(task_data: dict[str, Any], *, line: Callable[[str], Any] | None = None) -> str | None:
+    """校验追剧任务调度条件（截止日期/运行星期），返回跳过原因；None 表示允许运行。"""
+
+    def _emit(text: str) -> None:
+        if line is not None:
+            line(text)
+
+    extra = task_data.get("extra") or {}
+    allow_once = bool(extra.get("allow_once"))
+    runweek_mode = str(extra.get("runweek_mode") or "manual").strip().lower()
+    runweek = extra.get("runweek") or []
+    enddate = _parse_enddate(task_data.get("enddate"))
+    now = datetime.now()
+    _emit(f"执行时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    if enddate and now.date() > enddate:
+        _emit(f"跳过: 已超过截止日期 {enddate.isoformat()}")
+        return "已超过截止日期"
+    if allow_once:
+        _emit("运行一次: 忽略按星期运行限制")
+        return None
+    if runweek_mode == "auto":
+        tmdb_id = int(task_data.get("tmdb_id") or 0)
+        tmdb_media_type = str(task_data.get("tmdb_media_type") or "").strip().lower()
+        if tmdb_id <= 0 or tmdb_media_type != "tv":
+            _emit("跳过: 自动识别运行星期需要绑定 TMDB TV")
+            return "未绑定 TMDB TV"
+        if not bool(task_data.get("tmdb_configured")):
+            _emit("跳过: TMDB 未配置，无法自动识别运行星期")
+            return "TMDB 未配置"
+        days = task_data.get("tmdb_episode_weekdays") or task_data.get("tmdb_update_weekdays") or []
+        try:
+            week = set(int(x) for x in (days or []))
+        except Exception:
+            week = set()
+        week = {int(x) for x in week if 1 <= int(x) <= 7}
+        if not week:
+            _emit("跳过: 无法自动识别运行星期")
+            return "无法自动识别运行星期"
+        if now.isoweekday() not in week:
+            _emit(f"跳过: 星期 {now.isoweekday()} 不在 {sorted(list(week))}")
+            return "不在允许运行的星期范围内"
+        return None
+    if not runweek:
+        _emit("未配置运行星期: 默认允许运行")
+        return None
+    try:
+        week = set(int(x) for x in runweek)
+    except Exception:
+        week = set()
+    week = {int(x) for x in week if 1 <= int(x) <= 7}
+    if not week:
+        _emit("跳过: 未配置运行星期")
+        return "未配置运行星期"
+    if now.isoweekday() not in week:
+        _emit(f"跳过: 星期 {now.isoweekday()} 不在 {sorted(list(week))}")
+        return "不在允许运行的星期范围内"
+    return None
+
+
 def _normalize_name(name: str, ignore_extension: bool) -> str:
     normalized = name.strip().lower()
     if not ignore_extension:
@@ -999,56 +1058,14 @@ class DramaTaskExecutor:
 
 
     def execute(self) -> Tree:
-        extra = self.task_data.get("extra") or {}
-        allow_once = bool(extra.get("allow_once"))
-        runweek_mode = str(extra.get("runweek_mode") or "manual").strip().lower()
-        runweek = extra.get("runweek") or []
-        enddate = _parse_enddate(self.task_data.get("enddate"))
-        now = datetime.now()
         self._set_stage("validate_schedule")
         self._section("验证调度条件")
-        self._line(f"执行时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-        if enddate and now.date() > enddate:
-            self._line(f"跳过: 已超过截止日期 {enddate.isoformat()}")
-            raise SkipTask("已超过截止日期")
-        if allow_once:
-            self._line("运行一次: 忽略按星期运行限制")
-        elif runweek_mode == "auto":
-            tmdb_id = int(self.task_data.get("tmdb_id") or 0)
-            tmdb_media_type = str(self.task_data.get("tmdb_media_type") or "").strip().lower()
-            if tmdb_id <= 0 or tmdb_media_type != "tv":
-                self._line("跳过: 自动识别运行星期需要绑定 TMDB TV")
-                raise SkipTask("未绑定 TMDB TV")
-            if not bool(self.task_data.get("tmdb_configured")):
-                self._line("跳过: TMDB 未配置，无法自动识别运行星期")
-                raise SkipTask("TMDB 未配置")
-            days = self.task_data.get("tmdb_episode_weekdays") or self.task_data.get("tmdb_update_weekdays") or []
-            try:
-                week = set(int(x) for x in (days or []))
-            except Exception:
-                week = set()
-            week = {int(x) for x in week if 1 <= int(x) <= 7}
-            if not week:
-                self._line("跳过: 无法自动识别运行星期")
-                raise SkipTask("无法自动识别运行星期")
-            if now.isoweekday() not in week:
-                self._line(f"跳过: 星期 {now.isoweekday()} 不在 {sorted(list(week))}")
-                raise SkipTask("不在允许运行的星期范围内")
+        if bool(self.task_data.get("schedule_prechecked")):
+            self._line("已通过前置调度检查")
         else:
-            if not runweek:
-                self._line("未配置运行星期: 默认允许运行")
-            else:
-                try:
-                    week = set(int(x) for x in runweek)
-                except Exception:
-                    week = set()
-                week = {int(x) for x in week if 1 <= int(x) <= 7}
-                if not week:
-                    self._line("跳过: 未配置运行星期")
-                    raise SkipTask("未配置运行星期")
-                if now.isoweekday() not in week:
-                    self._line(f"跳过: 星期 {now.isoweekday()} 不在 {sorted(list(week))}")
-                    raise SkipTask("不在允许运行的星期范围内")
+            skip_reason = evaluate_drama_schedule_skip_reason(self.task_data, line=self._line)
+            if skip_reason:
+                raise SkipTask(skip_reason)
 
         self._set_stage("share_parse")
         self._section("解析分享链接")
